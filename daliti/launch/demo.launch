@@ -1,0 +1,39 @@
+<launch>
+	<arg name="dataset" default="hitsz" />
+	<arg name="rosbag_file_with_path" default="" />
+	<param name="dataset" type="string" value="$(arg dataset)" />
+	<param name="if_write_res_to_bag" type="int" value="0" />
+	<param name="bag_file_name" type="string" value="~/daliti/src/DaLiTI/eskf_lio/Log/detail_result.bag" />
+
+	<!-- This is important! Please wait about 5 seconds for the system start, after that can start playing the rosbag -->
+	<arg name="pause_enable" default="--pause" /> 
+	<!-- or the system might fail -->
+
+	<node pkg="rosbag" type="play" name="play" args="-r 1 -s 5 $(arg pause_enable) '$(arg rosbag_file_with_path)'" />
+	<param name="img_topic" type="string" value="/convert_image8_clahe" />
+
+	<!-- <node pkg="rosbag" type="play" name="play" args="-r 1 -s 45 $(arg pause_enable) $(arg rosbag_file_with_path)" />
+	<param name="img_topic" type="string" value="/thermal/cam1/image8bit" /> -->
+
+
+	<!-- image front process tool -->
+	<include file="$(find mytool)/launch/mytool.launch">
+		<arg name="dataset" value="$(arg dataset)" />
+	</include>
+	<!-- Lidar odometry param -->
+	<rosparam file="$(find daliti)/config/$(arg dataset)_lidar.yaml" command="load" />
+	<!-- VINS config -->
+	<param name="vins_config_file" type="string" value="$(find daliti)/config/$(arg dataset)_camera.yaml" />
+	<!-- Image conversion -->
+	<!-- <node pkg="image_transport" type="republish" name="republish" args="compressed in:=/camera/color/image_raw raw out:=/camera/color/image_raw" output="screen" respawn="true" /> -->
+	<!-- - Robot State TF -->
+	<include file="$(find daliti)/launch/include/module_robot_state_publisher.launch">
+		<arg name="dataset" value="$(arg dataset)" />
+	</include>
+	<!-- - Run Rviz -->
+	<include file="$(find daliti)/launch/include/module_rviz.launch" />
+	<include file="$(find daliti)/launch/include/module_sam.launch" />
+	<include file="$(find eskf_lio)/launch/run.launch">
+		<arg name="rviz" value="false" />
+	</include>
+</launch>

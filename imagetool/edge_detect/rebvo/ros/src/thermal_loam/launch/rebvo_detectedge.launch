@@ -1,0 +1,18 @@
+<launch>
+    <arg name="dataset"/> 
+    <!-- <node name="rebvo_node" pkg="rebvo" type="rebvo" output="screen" launch-prefix="gnome-terminal - -geometry=80x25+900+600 -t rebvo_node - -"> -->
+    <node name="rebvo_node" pkg="rebvo" type="rebvo" output="screen">
+        <param name="dataset" value="$(arg dataset)"/>
+        <rosparam command="load" file="$(find daliti)/config/$(arg dataset)_lidar.yaml" />
+        <param name="rebvo/imu_topic" value="/imu/data_raw" />
+        <param name="rebvo/image_topic" value="/convert_image" />
+        <!-- <param name="rebvo/image_topic" value="/convert_image/downsample" /> -->
+        <!-- for etio only -->
+            <!-- <param name="rebvo/image_topic" value="/convert_image8" />    -->
+        <param name="rebvo/frame_id" value="rebvo_frame" />
+        <param name="rebvo/dataset" value="$(arg dataset)" />
+    </node>
+
+    <!-- <node name="throttle" pkg="topic_tools" type="throttle" output="screen" args="messages /convert_image 8.0 /convert_image/downsample"/> -->
+
+</launch> 

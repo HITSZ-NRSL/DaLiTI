@@ -1,0 +1,52 @@
+common:
+  # Topics
+  pointCloudTopic: "/ouster/points"    # Point cloud data
+  imuTopic: "/imu/data"   # IMU data
+  tisTopic: "/daliti/vins/odometry/imu_propagate" # "/daliti/vins/odometry/vio_odometry"
+  lidar_feature_topic: "/laser_cloud_surf"
+  featptsThreshold: 30
+  beta: 0.1
+feature_extract:
+  # Frames
+  lidarFrame: "lidar_link"
+
+  # Sensor Settings
+  sensor: ouster #velodyne                            # lidar sensor type, either 'velodyne' or 'ouster' 'robosense' 'livox'
+  N_SCAN: 64 # number of lidar channel (i.e.,Velodyne/Ouster/Robosense: 16, 32, 64, 128,Livox Horizon:6)
+  Horizon_SCAN: 1024 # lidar horizontal resolution (Velodyne:1800, Ouster:512,1024,2048,Livox Horizon: 4000)
+  downsampleRate: 1 # default: 1. Downsample your data if too many points. i.e., 16 = 64 / 4, 16 = 16 / 1
+  lidarMinRange: 0.5 # default: 1.0, minimum lidar range to be used
+  lidarMaxRange: 1000.0 # default: 1000.0, maximum lidar range to be used
+  feature_enabled: 0 # default: 1. use feature or not
+  pointFilterRate: 5 # default:1
+
+  # LOAM feature threshold
+  edgeThreshold: 1.0
+  surfThreshold: 0.1
+  edgeFeatureMinValidNum: 10
+  surfFeatureMinValidNum: 100
+
+  # voxel filter paprams
+  odometrySurfLeafSize: 0.2 # default: 0.4 - outdoor, 0.2 - indoor  only use surf ds here
+
+  useAuxiliaryLidar: false
+  auxiliaryDSRate: 1
+  auxiliaryLidarMinRange: 1.0
+  auxiliaryLidarMaxRange: 200.0
+  auxiliaryFeatureEnable: true
+  auxiliaryPointFilterRate: 4
+
+
+
+mapping:
+  dense_map_enable: true
+  use_gps: true
+  gf_method: "full" #full--rnd--gfs
+  save_tum_traj: true
+  max_iteration: 10 #10
+  filter_size_surf: 0.5
+  filter_size_map: 0.5
+  cube_side_length: 1000 # default 1000.
+  extrinsic_est_en: false # true: enable the online estimation of IMU-LiDAR extrinsic
+  extrinsic_T: [0.0, 0.0, 0.0]
+  extrinsic_R: [1, 0, 0, 0, 1, 0, 0, 0, 1]

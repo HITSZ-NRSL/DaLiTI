@@ -1,0 +1,9 @@
+<launch>
+    <arg name="dataset"/> 
+    <!-- <node pkg="rs_to_velodyne" type="rs_to_velodyne" name="rs_to_velodyne" output="screen" args="XYZI XYZIRT" /> -->
+    <!-- <node pkg="rslidar_to_velodyne" type="rslidar_to_velodyne" name="rslidar_to_velodyne" output="screen" /> -->
+    <include file="$(find image_convert)/launch/image_convert.launch"></include>
+    <include file="$(find rebvo)/launch/rebvo_detectedge.launch">
+        <arg name="dataset" value="$(arg dataset)"/>
+    </include>
+</launch>
