@@ -29,3 +29,19 @@ For validation, the hitsz degration dataset is provided: [dowload link](https://
 DaLiTI is partly modified codes form [LVI-SAM](https://github.com/TixiaoShan/LVI-SAM), [FAST-LIO2](https://github.com/hku-mars/FAST_LIO), [VINS-Mono](https://github.com/HKUST-Aerial-Robotics/VINS-Mono), [ESKF_LIO](https://github.com/chengwei0427/ESKF_LIO.git) and [rebvo](https://github.com/JuanTarrio/rebvo). Thanks for the contributers.  
 
 Contributer: [Yufeng Liu](https://github.com/raymond-lau-lyf)
+
+### 4.  Citation
+If you use our work, please cite:
+```
+@ARTICLE{AURO-D-21-00050R1,
+         author={Wang, Yu and Liu, Yufeng and Chen, Lingxu and Chen, Haoyao and Zhang, Shiwu},
+         journal={IEEE Robotics and Automation Letters},
+         title={Degradation-Aware LiDAR-Thermal-Inertial SLAM},
+         year={2025},
+         volume={10},
+         number={8},
+         pages={8035-8042},
+         doi={10.1109/LRA.2025.3581127}}
+```
+## LICENSE
+The source code is released under GPLv3 license.
