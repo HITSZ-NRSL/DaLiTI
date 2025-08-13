@@ -33,7 +33,7 @@ Contributer: [Yufeng Liu](https://github.com/raymond-lau-lyf)
 ### 4.  Citation
 If you use our work, please cite:
 ```
-@ARTICLE{AURO-D-21-00050R1,
+@ARTICLE{11045071,
          author={Wang, Yu and Liu, Yufeng and Chen, Lingxu and Chen, Haoyao and Zhang, Shiwu},
          journal={IEEE Robotics and Automation Letters},
          title={Degradation-Aware LiDAR-Thermal-Inertial SLAM},
