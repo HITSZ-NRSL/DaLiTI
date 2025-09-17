@@ -8,7 +8,7 @@ This repository contains code for a Degradation aware LiDAR-Thermal-Inertial SLA
 
 ### 1. Dependency
 - ROS noetic (tested)
-- Basic libraries for common SLAM (e.g. openCV 4, pcl-1.10, etc.)
+- Basic libraries for common SLAM (e.g. openCV 4, pcl-1.10, ceres-solver-1.14 etc.)
 - gtsam 4.0.3
 
 ### 2. Run Examples
@@ -23,7 +23,7 @@ cd ..
 ```
 roslaunch daliti demo.launch rosbag_file_with_path:="YOUR/PATH/TO/ROSBAG/XXX.bag"
 ```
-For validation, the hitsz degration dataset is provided: [dowload link](https://drive.google.com/drive/folders/1U44TfwOejWUmdcbuG6x2k14r6DkX6V-k) 
+For validation, the hitsz degration dataset is provided: [dowload link](https://entuedu-my.sharepoint.com/:f:/g/personal/yufeng004_e_ntu_edu_sg/EpL7PLCR5p1OrfxFnaIS1-oBOHiVjv-PG6_BFTvu3ANp9Q?e=kkutbE) 
 
 ### 3.  Acknowledgements
 DaLiTI is partly modified codes form [LVI-SAM](https://github.com/TixiaoShan/LVI-SAM), [FAST-LIO2](https://github.com/hku-mars/FAST_LIO), [VINS-Mono](https://github.com/HKUST-Aerial-Robotics/VINS-Mono), [ESKF_LIO](https://github.com/chengwei0427/ESKF_LIO.git) and [rebvo](https://github.com/JuanTarrio/rebvo). Thanks for the contributers.  
