@@ -9,7 +9,7 @@
 	<arg name="pause_enable" default="--pause" /> 
 	<!-- or the system might fail -->
 
-	<node pkg="rosbag" type="play" name="play" args="-r 1 -s 5 $(arg pause_enable) '$(arg rosbag_file_with_path)'" />
+	<node pkg="rosbag" type="play" name="play" args="-r 1 -s 0 $(arg pause_enable) '$(arg rosbag_file_with_path)'" />
 	<param name="img_topic" type="string" value="/convert_image8_clahe" />
 
 	<!-- <node pkg="rosbag" type="play" name="play" args="-r 1 -s 45 $(arg pause_enable) $(arg rosbag_file_with_path)" />

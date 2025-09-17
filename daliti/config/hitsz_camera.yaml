@@ -37,7 +37,7 @@ projection_parameters:
 #imu parameters       The more accurate parameters you provide, the worse performance
 acc_n: 1.2163799584446335e-02          # accelerometer measurement noise standard deviation. #0.2
 gyr_n: 3.0572547761517702e-03         # gyroscope measurement noise standard deviation.     #0.05
-acc_w: 1.4453533271304003e-04         # accelerometer bias random work noise standard deviation.  #0.02
+acc_w: 1.4453533271304003e-03         # accelerometer bias random work noise standard deviation.  #0.02
 gyr_w: 5.2968987141886054e-05       # gyroscope bias random work noise standard deviation.     #4.0e-5
 g_norm: 9.78       # gravity magnitude
 
