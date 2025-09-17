@@ -1,4 +1,5 @@
 #include "feature_tracker.h"
+#include <iostream>
 
 int FeatureTracker::n_id = 0;
 using namespace cv;
@@ -252,10 +253,8 @@ void calcOpticalFlowPyrLK1(const Mat& prevImg, const Mat& nextImg,
                      derivJBuf.type(), derivJBuf.data);
               Mat derivI(_derivI, Rect(winSize.width, winSize.height, imgSize.width, imgSize.height));
               Mat derivJ(_derivJ, Rect(winSize.width, winSize.height, imgSize.width, imgSize.height));
-              cv::Mat  cvderivI = _derivI;
-              cvZero(&cvderivI);
-              cv::Mat  cvderivJ = _derivJ;
-              cvZero(&cvderivJ);
+              _derivI = Mat::zeros(_derivI.size(), _derivI.type());
+              _derivJ = Mat::zeros(_derivJ.size(), _derivJ.type());
               vector<int> fromTo(cn * 2);
               for (k = 0; k < cn; k++)
                      fromTo[k * 2] = k;
@@ -511,10 +510,9 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time, Matrix3d r
             forw_num:
             init_flag: estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR
         */
-        // if((temp_angle<0.5)&&cur_num!=0 && abs(cur_num-forw_num)/cur_num<0.1&&init_flag==1)
-        if(0)
+        if((temp_angle<0.1)&&cur_num!=0 && abs(cur_num-forw_num)/cur_num<0.1&&init_flag==1)
         {
-            ROS_DEBUG("[LK]---- OUR LK ----");
+            ROS_INFO("[LK]---- OUR LK ----");
             calcOpticalFlowPyrLK1(cur_img, forw_img, cur_pts, forw_pts, status, err, cv::Size(21, 21), 3,criteria,minEigThreshold,flags);
             if (DRAW_TRACK){
                 print_LK_status(status,err,0);

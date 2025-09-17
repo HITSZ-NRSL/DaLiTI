@@ -5,11 +5,8 @@
 	<param name="if_write_res_to_bag" type="int" value="0" />
 	<param name="bag_file_name" type="string" value="~/daliti/src/DaLiTI/eskf_lio/Log/detail_result.bag" />
 
-	<!-- This is important! Please wait about 5 seconds for the system start, after that can start playing the rosbag -->
-	<arg name="pause_enable" default="--pause" /> 
-	<!-- or the system might fail -->
 
-	<node pkg="rosbag" type="play" name="play" args="-r 1 -s 0 $(arg pause_enable) '$(arg rosbag_file_with_path)'" />
+	<node pkg="rosbag" type="play" name="play" args="-r 1 -s 0 '$(arg rosbag_file_with_path)'" />
 	<param name="img_topic" type="string" value="/convert_image8_clahe" />
 
 	<!-- <node pkg="rosbag" type="play" name="play" args="-r 1 -s 45 $(arg pause_enable) $(arg rosbag_file_with_path)" />
