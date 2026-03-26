@@ -41,12 +41,27 @@ fi
 
 echo ">> Code mount: $CODE_DIR -> /ws/src/DaLiTI"
 
+# Try to enable NVIDIA GPU acceleration when the host and Docker runtime support it.
+GPU_ARGS=()
+if command -v nvidia-smi > /dev/null 2>&1; then
+    if docker run --rm --gpus all --entrypoint /bin/true daliti:latest > /dev/null 2>&1; then
+        GPU_ARGS+=(--gpus all)
+        GPU_ARGS+=(-e NVIDIA_VISIBLE_DEVICES=all)
+        GPU_ARGS+=(-e NVIDIA_DRIVER_CAPABILITIES=all)
+        echo ">> NVIDIA GPU support enabled for Docker"
+    else
+        echo "Warning: NVIDIA GPU detected on host, but Docker GPU runtime is not configured"
+        echo "         Container will start without GPU acceleration"
+    fi
+fi
+
 # Start container
 echo ">> Starting Docker container (using zsh shell)..."
 docker run -it --rm \
   --name daliti_container \
   --network host \
   --privileged \
+  "${GPU_ARGS[@]}" \
   -e DISPLAY=$DISPLAY \
   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   -v $CODE_DIR:/ws/src/DaLiTI:rw \
