@@ -71,11 +71,13 @@ catkin_package(
 
 
 add_executable(lio_feat_extract src/feature_extract.cpp)
+add_dependencies(lio_feat_extract ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(lio_feat_extract ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
 
 add_executable(lio_feat_extract_multi src/feature_extract_multi.cpp)
+add_dependencies(lio_feat_extract_multi ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(lio_feat_extract_multi ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
 
 add_executable(lio_laserMapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp)
-add_dependencies(lio_laserMapping ${catkin_EXPORTED_TARGETS})
+add_dependencies(lio_laserMapping ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(lio_laserMapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ${PYTHON_LIBRARIES})

@@ -1,4 +1,4 @@
-FROM kalibr:noetic-20.04
+FROM osrf/ros:noetic-desktop-full-focal
 
 ENV DEBIAN_FRONTEND=noninteractive
 
