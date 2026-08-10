@@ -98,12 +98,15 @@ void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q,
     odometry.twist.twist.linear.x = V.x();
     odometry.twist.twist.linear.y = V.y();
     odometry.twist.twist.linear.z = V.z();
+    // Publish the reset generation on every odometry representation.  The
+    // lidar fusion subscribes to imu_propagate, so this must be populated
+    // before pub_latest_odometry publishes its copy of the message.
+    odometry.pose.covariance[0] = double(failureId);
     pub_latest_odometry.publish(odometry);
 
 
 #if IF_OFFICIAL
     // imu odometry in ROS format (change rotation), used for lidar odometry initial guess
-    odometry.pose.covariance[0] = double(failureId); // notify lidar odometry failure
     tf::Quaternion q_odom_cam(Q.x(), Q.y(), Q.z(), Q.w());
     tf::Quaternion q_cam_to_lidar(0, 1, 0, 0); // mark: camera - lidar
     tf::Quaternion q_odom_ros = q_odom_cam * q_cam_to_lidar;
@@ -117,7 +120,6 @@ void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q,
     br.sendTransform(trans_world_vinsbody_ros);
 #else
     
-    odometry.pose.covariance[0] = double(failureId); // notify lidar odometry failure
     //; R_odom_imu
     tf::Quaternion q_odom_imu(Q.x(), Q.y(), Q.z(), Q.w());   
     Eigen::Quaterniond q_imu_lidar(R_imu_lidar);

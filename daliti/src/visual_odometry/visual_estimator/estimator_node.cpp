@@ -5,6 +5,7 @@
 #include <map>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <condition_variable>
 #include <ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
@@ -33,7 +34,7 @@ shared_ptr<LIO_Preprocess> p_pre(new LIO_Preprocess());
 int init_flag = 0;
 
 // RECV_LIO_FAIL_FLAG
-bool RECV_LIO_FAIL_FLAG = true;
+std::atomic<bool> RECV_LIO_FAIL_FLAG{true};
 
 // global variable saving the lidar odometry
 deque<nav_msgs::Odometry> g_odomQueue;
@@ -54,6 +55,11 @@ Eigen::Quaterniond tmp_Q;
 Eigen::Vector3d tmp_V;
 Eigen::Vector3d tmp_Ba;
 Eigen::Vector3d tmp_Bg;
+Eigen::Vector3d tmp_G{0.0, 0.0, 9.8};
+Eigen::Vector3d tmp_tic = Eigen::Vector3d::Zero();
+Eigen::Quaterniond tmp_ric = Eigen::Quaterniond::Identity();
+int tmp_failure_count = 0;
+bool tmp_solver_nonlinear = false;
 Eigen::Vector3d acc_0;
 Eigen::Vector3d gyr_0;
 bool init_feature = 0;
@@ -83,12 +89,12 @@ void predict(const sensor_msgs::ImuConstPtr &imu_msg)
     double rz = imu_msg->angular_velocity.z;
     Eigen::Vector3d angular_velocity{rx, ry, rz};
 
-    Eigen::Vector3d un_acc_0 = tmp_Q * (acc_0 - tmp_Ba) - estimator.g;
+    Eigen::Vector3d un_acc_0 = tmp_Q * (acc_0 - tmp_Ba) - tmp_G;
 
     Eigen::Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - tmp_Bg;
     tmp_Q = tmp_Q * Utility::deltaQ(un_gyr * dt);
 
-    Eigen::Vector3d un_acc_1 = tmp_Q * (linear_acceleration - tmp_Ba) - estimator.g;
+    Eigen::Vector3d un_acc_1 = tmp_Q * (linear_acceleration - tmp_Ba) - tmp_G;
 
     Eigen::Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
 
@@ -112,6 +118,11 @@ void update()
     gyr_0 = estimator.gyr_0;
 
     Eigen::Vector3d tmp_g = estimator.g;
+    tmp_G = tmp_g;
+    tmp_tic = estimator.tic[0];
+    tmp_ric = Eigen::Quaterniond(estimator.ric[0]);
+    tmp_failure_count = estimator.failureCount;
+    tmp_solver_nonlinear = estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR;
     std_msgs::Float32MultiArray msg;
     msg.data.push_back(tmp_Ba(0)); 
     msg.data.push_back(tmp_Ba(1));
@@ -185,6 +196,18 @@ getMeasurements()
             plfeature_buf.pop();
             // continue;
             return measurements;
+        }
+
+        // Make image/LIO association independent of callback scheduling.  The
+        // process thread must not consume an image until the first eligible LIO
+        // sample is present in the queue.
+        if (USE_LIDAR)
+        {
+            const double image_time = plfeature_buf.front().first->header.stamp.toSec() + estimator.td;
+            std::lock_guard<std::mutex> odom_lock(m_odom);
+            if (g_odomQueue.empty() ||
+                g_odomQueue.back().header.stamp.toSec() < image_time - 0.0025)
+                return measurements;
         }
         sensor_msgs::PointCloudConstPtr img_pointfeature_msg = plfeature_buf.front().first;
         plfeature_buf.pop();
@@ -270,9 +293,9 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
         std::lock_guard<std::mutex> lg(m_state);
         predict(imu_msg);
         std_msgs::Header header = imu_msg->header;
-        if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR)
-            pubLatestOdometry(tmp_P, tmp_Q, tmp_V, header, estimator.failureCount,
-                              estimator.tic[0], Eigen::Quaterniond(estimator.ric[0]), RECV_LIO_FAIL_FLAG);
+        if (tmp_solver_nonlinear)
+            pubLatestOdometry(tmp_P, tmp_Q, tmp_V, header, tmp_failure_count,
+                              tmp_tic, tmp_ric, RECV_LIO_FAIL_FLAG.load());
     }
 }
 
@@ -284,25 +307,17 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg)
 }
 
 // void sync_liostate(StatesGroup &lio_state,const std::deque<nav_msgs::Odometry> odomQueue)//sync_newest_liostate_from_imuf_lio_odom
-void sync_liostate() // sync_newest_liostate_from_imuf_lio_odom
+void sync_liostate(const nav_msgs::Odometry &aligned_odom)
 {
-    if (!g_odomQueue.empty())
-    {
-        g_livo_state.pos_end << g_odomQueue.back().pose.pose.position.x, g_odomQueue.back().pose.pose.position.y, g_odomQueue.back().pose.pose.position.z;
-        Eigen::Quaterniond eigenQuat(g_odomQueue.back().pose.pose.orientation.w, g_odomQueue.back().pose.pose.orientation.x, g_odomQueue.back().pose.pose.orientation.y, g_odomQueue.back().pose.pose.orientation.z);
-        g_livo_state.rot_end = eigenQuat.toRotationMatrix();
-        g_livo_state.vel_end << g_odomQueue.back().twist.twist.linear.x, g_odomQueue.back().twist.twist.linear.y, g_odomQueue.back().twist.twist.linear.z;
+    g_livo_state.pos_end << aligned_odom.pose.pose.position.x, aligned_odom.pose.pose.position.y, aligned_odom.pose.pose.position.z;
+    Eigen::Quaterniond eigenQuat(aligned_odom.pose.pose.orientation.w, aligned_odom.pose.pose.orientation.x,
+                                aligned_odom.pose.pose.orientation.y, aligned_odom.pose.pose.orientation.z);
+    g_livo_state.rot_end = eigenQuat.normalized().toRotationMatrix();
+    g_livo_state.vel_end << aligned_odom.twist.twist.linear.x, aligned_odom.twist.twist.linear.y, aligned_odom.twist.twist.linear.z;
 
-        g_livo_state.bias_g << g_odomQueue.back().pose.covariance[4], g_odomQueue.back().pose.covariance[5], g_odomQueue.back().pose.covariance[6];
-        g_livo_state.bias_a << g_odomQueue.back().pose.covariance[1], g_odomQueue.back().pose.covariance[2], g_odomQueue.back().pose.covariance[3];
-        g_livo_state.gravity << 0, 0, g_odomQueue.back().pose.covariance[7];
-        // g_livo_state.cov = ;
-    }
-    else
-    {
-        ROS_DEBUG("g_odomQueue empty!");
-        // ROS_WARN("g_odomQueue empty!");
-    }
+    g_livo_state.bias_g << aligned_odom.pose.covariance[4], aligned_odom.pose.covariance[5], aligned_odom.pose.covariance[6];
+    g_livo_state.bias_a << aligned_odom.pose.covariance[1], aligned_odom.pose.covariance[2], aligned_odom.pose.covariance[3];
+    g_livo_state.gravity << 0, 0, aligned_odom.pose.covariance[7];
 }
 void plfeature_callback(const sensor_msgs::PointCloudConstPtr &point_feature_msg, const sensor_msgs::PointCloudConstPtr &line_feature_msg)
 {
@@ -328,11 +343,11 @@ void lidar_status_callback(const std_msgs::Header &lidar_status_msg)
 {
     if (lidar_status_msg.frame_id == "lidar data failed")
     {
-        RECV_LIO_FAIL_FLAG = 1;
+        RECV_LIO_FAIL_FLAG.store(true);
     }
     else
     {
-        RECV_LIO_FAIL_FLAG = 0;
+        RECV_LIO_FAIL_FLAG.store(false);
     }
 }
 
@@ -363,12 +378,17 @@ void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
         while (!imu_buf.empty())
             imu_buf.pop();
         while (!lidar_buf.empty())
-            imu_buf.pop();
+            lidar_buf.pop();
         m_buf.unlock();
         m_estimator.lock();
         estimator.clearState();
         estimator.setParameter();
         m_estimator.unlock();
+        {
+            std::lock_guard<std::mutex> state_lock(m_state);
+            tmp_solver_nonlinear = false;
+            init_imu = true;
+        }
         current_time = -1;
         last_imu_t = 0;
     }
@@ -467,28 +487,32 @@ void process()
             }
 
 
-            // 3. sync liostate to add odomqueue
-            sync_liostate();
-
-            // 4. LVI-SAM added a initialization info from lidar to help VINS
+            // 3/4. Use one time-aligned raw odometry sample for both the LIO
+            // state and VINS initialization information.
             // Get initialization info from lidar odometry
             vector<float> initialization_info;
-            m_odom.lock();
-            
-            initialization_info = odomRegister->getOdometry(g_odomQueue, img_pointfeature_msg->header.stamp.toSec() + estimator.td);
-            m_odom.unlock();
+            nav_msgs::Odometry aligned_odom;
+            {
+                std::lock_guard<std::mutex> odom_lock(m_odom);
+                initialization_info = odomRegister->getOdometry(
+                    g_odomQueue, img_pointfeature_msg->header.stamp.toSec() + estimator.td,
+                    &aligned_odom);
+            }
+            if (!initialization_info.empty() && initialization_info[0] >= 0)
+                sync_liostate(aligned_odom);
 
             // 5. process data (auto-adapted [(L)-I-V] )
             TicToc t_process_data;
             StatesGroup orig_lio_state = g_livo_state;
-            g_livo_state = estimator.processData(g_livo_state, RECV_LIO_FAIL_FLAG, pointfeatures, initialization_info, img_pointfeature_msg->header);
+            const bool lio_failed = RECV_LIO_FAIL_FLAG.load();
+            g_livo_state = estimator.processData(g_livo_state, lio_failed, pointfeatures, initialization_info, img_pointfeature_msg->header);
             double whole_t = t_s.toc() , t_process = t_process_data.toc();
             // std::cout << ANSI_COLOR_CYAN_BOLD << "whole image handler time :  " << whole_t <<" ms" << "process time :  " << t_process <<" ms" << ANSI_COLOR_RESET << std::endl;
 
             // 6. Visualization
             std_msgs::Header header = img_pointfeature_msg->header;
             pub_VIO_Odometry(estimator, header);
-            pub_LIO_Odometry(orig_lio_state, header, RECV_LIO_FAIL_FLAG);
+            pub_LIO_Odometry(orig_lio_state, header, lio_failed);
             pub_fused_Odometry(estimator, g_livo_state, header);
             pubKeyPoses(estimator, header);
             pubCameraPose(estimator, header);

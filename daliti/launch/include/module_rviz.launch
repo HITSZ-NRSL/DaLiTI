@@ -1,8 +1,11 @@
 <launch>
 
     <arg name="project" default="daliti"/>
+    <arg name="disable_ros1_eol_warnings" default="1"/>
 
     <!--- Run Rviz-->
-    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find daliti)/launch/include/config/rviz.rviz" />
+    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find daliti)/launch/include/config/rviz.rviz">
+        <env name="DISABLE_ROS1_EOL_WARNINGS" value="$(arg disable_ros1_eol_warnings)"/>
+    </node>
 
 </launch>

@@ -638,6 +638,9 @@ void FeatureTracker::rejectWithF()
         }
 
         vector<uchar> status;
+        // OpenCV's RANSAC consumes a thread-local RNG.  ROS may dispatch this
+        // callback on either spinner thread, so reset the seed for every frame.
+        cv::setRNGSeed(0);
         cv::findFundamentalMat(un_cur_pts, un_forw_pts, cv::FM_RANSAC, F_THRESHOLD, 0.99, status);
         int size_a = cur_pts.size();
         reduceVector(prev_pts, status);

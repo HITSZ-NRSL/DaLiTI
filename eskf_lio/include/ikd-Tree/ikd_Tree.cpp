@@ -736,7 +736,7 @@ template <typename PointType>
 void KD_TREE<PointType>::Rebuild(KD_TREE_NODE **root)
 {
     KD_TREE_NODE *father_ptr;
-    if ((*root)->TreeSize >= Multi_Thread_Rebuild_Point_Num)
+    if (async_rebuild_enabled && (*root)->TreeSize >= Multi_Thread_Rebuild_Point_Num)
     {
         if (!pthread_mutex_trylock(&rebuild_ptr_mutex_lock))
         {
@@ -1725,4 +1725,3 @@ bool KD_TREE<PointType>::point_cmp_z(PointType a, PointType b) { return a.z < b.
 template class KD_TREE<pcl::PointXYZ>;
 template class KD_TREE<pcl::PointXYZI>;
 template class KD_TREE<pcl::PointXYZINormal>;
-

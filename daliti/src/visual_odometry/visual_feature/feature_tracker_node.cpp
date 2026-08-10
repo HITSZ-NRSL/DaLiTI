@@ -1,10 +1,17 @@
 #include "feature_tracker.h"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+
 #define SHOW_UNDISTORTION 0
 
 
 // mtx lock for two threads
 std::mutex mtx_lidar;
+std::mutex mtx_imu;
+std::mutex mtx_image;
+std::condition_variable imu_data_ready;
 
 // global variable for saving the depthCloud shared between two threads
 pcl::PointCloud<PointType>::Ptr depthCloud(new pcl::PointCloud<PointType>());
@@ -35,7 +42,7 @@ double cur_img_time = 0;
 double image_timestamp_bias = 0.0;
 
 // RECV_LIO_FAIL_FLAG
-bool RECV_LIO_FAIL_FLAG=false;
+std::atomic<bool> RECV_LIO_FAIL_FLAG{false};
 
 
 Eigen::Vector3d tmp_ba(0,0,0);
@@ -45,11 +52,31 @@ int init_flag = 0;
 std::vector<sensor_msgs::Imu> imu_msg_buffer;
 void imu_callback(
         const sensor_msgs::ImuConstPtr &msg) {
-    // Wait for the first image to be set.
-    if (first_image_flag) return;
-    imu_msg_buffer.push_back(*msg);
+    {
+        std::lock_guard<std::mutex> lock(mtx_imu);
+        // Wait for the first image to be set.
+        if (first_image_flag) return;
+        imu_msg_buffer.push_back(*msg);
+    }
+    imu_data_ready.notify_one();
 }
-Matrix3d integrateImuData() {
+Matrix3d integrateImuData(double image_time) {
+    std::unique_lock<std::mutex> lock(mtx_imu);
+
+    // The image and IMU subscriptions are served by different spinner threads.
+    // Wait for the complete timestamp interval instead of integrating whichever
+    // messages happened to have reached this callback first.
+    const double required_imu_time = image_time + 0.005;
+    const bool interval_complete = imu_data_ready.wait_for(
+        lock, std::chrono::milliseconds(200), [required_imu_time]
+        {
+            return !imu_msg_buffer.empty() &&
+                   imu_msg_buffer.back().header.stamp.toSec() >= required_imu_time;
+        });
+    if (!interval_complete)
+        ROS_WARN("Timed out waiting for IMU data through image time %.6f (need %.6f).",
+                 image_time, required_imu_time);
+
     if (imu_msg_buffer.empty()) {
         std::cout<<"empty IMU!"<<std::endl;
         return Matrix3d::Identity();
@@ -57,7 +84,7 @@ Matrix3d integrateImuData() {
     // Find the start and the end limit within the imu msg buffer.
     auto begin_iter = imu_msg_buffer.begin();
     while (begin_iter != imu_msg_buffer.end()) {
-        if ((begin_iter->header.stamp.toSec() - last_image_time) < -0.01)
+        if ((begin_iter->header.stamp.toSec() - image_time) < -0.01)
             ++begin_iter;
         else
             break;
@@ -65,41 +92,41 @@ Matrix3d integrateImuData() {
 
     auto end_iter = begin_iter;
     while (end_iter != imu_msg_buffer.end()) {
-        if ((end_iter->header.stamp.toSec() - cur_img_time) < 0.005)
+        if ((end_iter->header.stamp.toSec() - image_time) < 0.005)
             ++end_iter;
         else
             break;
     }
 
     // Compute the mean angular velocity in the IMU frame.
-    Vector3d mean_ang_vel(0.0, 0.0, 0.0);
-    Matrix3d Rs;
-    for (auto iter = begin_iter; iter < end_iter; ++iter)
+    Matrix3d Rs = Matrix3d::Identity();
+    if (begin_iter != end_iter)
     {
-        double t0,t1;
-        Vector3d gyr_0,gyr_1;
-        if(iter == begin_iter)
+        auto iter = begin_iter;
+        double t0 = iter->header.stamp.toSec();
+        Vector3d gyr_0(iter->angular_velocity.x,
+                       iter->angular_velocity.y,
+                       iter->angular_velocity.z);
+
+        for (++iter; iter != end_iter; ++iter)
         {
-            gyr_0 = Vector3d(iter->angular_velocity.x,
-                                 iter->angular_velocity.y, iter->angular_velocity.z);
-            Rs.setIdentity();
-            t0 = iter->header.stamp.toSec();
-            continue;
+            Vector3d gyr_1(iter->angular_velocity.x,
+                           iter->angular_velocity.y,
+                           iter->angular_velocity.z);
+            Vector3d un_gyr = 0.5 * (gyr_0 + gyr_1) - tmp_bg;
+            double t1 = iter->header.stamp.toSec();
+            double dt = t1 - t0;
+
+            Vector3d cam0_mean_ang_vel = Ric.transpose() * un_gyr;
+            // Compute the relative rotation without normalizing a zero vector.
+            Vector3d cam0_angle_axisd = cam0_mean_ang_vel * dt;
+            double angle = cam0_angle_axisd.norm();
+            if (angle > 1e-12)
+                Rs *= AngleAxisd(angle, cam0_angle_axisd / angle).toRotationMatrix().transpose();
+
+            t0 = t1;
+            gyr_0 = gyr_1;
         }
-        gyr_1 = Vector3d(iter->angular_velocity.x,
-                                 iter->angular_velocity.y, iter->angular_velocity.z);
-        Vector3d un_gyr = 0.5 * (gyr_0 + gyr_1)-tmp_bg;
-        t1 = iter->header.stamp.toSec();
-        double dt = t1-t0;
-
-        Vector3d cam0_mean_ang_vel = Ric.transpose() *  un_gyr;
-        // Compute the relative rotation.
-        Vector3d cam0_angle_axisd = cam0_mean_ang_vel * dt;
-        Rs *= AngleAxisd(cam0_angle_axisd.norm(), cam0_angle_axisd.normalized()).toRotationMatrix().transpose();
-
-        //Rs *= deltaQ(un_gyr * dt).toRotationMatrix();
-        t0 = t1;
-        gyr_0 = gyr_1;
     }
     imu_msg_buffer.erase(imu_msg_buffer.begin(), end_iter);
     return Rs;
@@ -107,6 +134,7 @@ Matrix3d integrateImuData() {
 
 void data_callback(const std_msgs::Float32MultiArray &data_msg)
 {
+    std::lock_guard<std::mutex> lock(mtx_imu);
     tmp_ba(0) = data_msg.data.at(0);
     tmp_ba(1) = data_msg.data.at(1);
     tmp_ba(2) = data_msg.data.at(2);
@@ -131,15 +159,22 @@ std::ofstream feature_tracker_time_file("~/daliti/src/DaLiTI/eskf_lio/Log/featur
 
 void multi_callback(const daliti::images_infoConstPtr &imgs_msg, const sensor_msgs::PointCloudConstPtr &edgedes_msg)
 { 
+    std::lock_guard<std::mutex> image_lock(mtx_image);
     //cout <<"Image timestamp: " <<img_msg->header.stamp.toSec() << endl;
     //printf("Image timestamp = %lf\r\n" , img_msg->header.stamp.toSec());
     sensor_msgs::Image edge_img_msg=imgs_msg->edge_image;
     sensor_msgs::Image origion_img_msg=imgs_msg->origion_image;
     cur_img_time = edge_img_msg.header.stamp.toSec();
 
-    if(first_image_flag)
+    bool is_first_image = false;
     {
-        first_image_flag = false;
+        std::lock_guard<std::mutex> imu_lock(mtx_imu);
+        is_first_image = first_image_flag;
+        if (is_first_image)
+            first_image_flag = false;
+    }
+    if(is_first_image)
+    {
         first_image_time = cur_img_time;
         last_image_time = cur_img_time;
         return;
@@ -148,7 +183,10 @@ void multi_callback(const daliti::images_infoConstPtr &imgs_msg, const sensor_ms
     if (cur_img_time - last_image_time > 1.0 || cur_img_time < last_image_time)
     {
         ROS_WARN("image discontinue! reset the feature tracker!");
-        first_image_flag = true; 
+        {
+            std::lock_guard<std::mutex> imu_lock(mtx_imu);
+            first_image_flag = true;
+        }
         last_image_time = 0;
         pub_count = 1;
         std_msgs::Bool restart_flag;
@@ -203,9 +241,13 @@ void multi_callback(const daliti::images_infoConstPtr &imgs_msg, const sensor_ms
         ROS_DEBUG("processing camera %d", i);
         if (i != 1 || !STEREO_TRACK)
         {
-            Matrix3d relative_R = integrateImuData();
-            Eigen::AngleAxisd debugrotation_vector(relative_R);
-            trackerData[i].readImage(ptr_edge_image->image.rowRange(ROW * i, ROW * (i + 1)), edge_img_msg.header.stamp.toSec(),relative_R,edgedes_msg,init_flag,edge_num);
+            Matrix3d relative_R = integrateImuData(cur_img_time);
+            int current_init_flag;
+            {
+                std::lock_guard<std::mutex> imu_lock(mtx_imu);
+                current_init_flag = init_flag;
+            }
+            trackerData[i].readImage(ptr_edge_image->image.rowRange(ROW * i, ROW * (i + 1)), edge_img_msg.header.stamp.toSec(),relative_R,edgedes_msg,current_init_flag,edge_num);
         }
         else
         {
@@ -284,11 +326,14 @@ void multi_callback(const daliti::images_infoConstPtr &imgs_msg, const sensor_ms
 
         // get feature depth from lidar point cloud
         pcl::PointCloud<PointType>::Ptr depth_cloud_temp(new pcl::PointCloud<PointType>());
-        mtx_lidar.lock();
-        *depth_cloud_temp = *depthCloud;
-        mtx_lidar.unlock();
+        sensor_msgs::PointCloud2ConstPtr origin_cloud_temp;
+        {
+            std::lock_guard<std::mutex> lidar_lock(mtx_lidar);
+            *depth_cloud_temp = *depthCloud;
+            origin_cloud_temp = origion_deskewed_cloud;
+        }
 
-        sensor_msgs::ChannelFloat32 depth_of_points = depthRegister->get_depth(edge_img_msg.header.stamp, edge_img, origion_img, origion_deskewed_cloud, depth_cloud_temp, trackerData[0].m_camera, feature_points);
+        sensor_msgs::ChannelFloat32 depth_of_points = depthRegister->get_depth(edge_img_msg.header.stamp, edge_img, origion_img, origin_cloud_temp, depth_cloud_temp, trackerData[0].m_camera, feature_points);
         feature_points->channels.push_back(depth_of_points);
 
         // skip the first image; since no optical speed on frist image
@@ -364,11 +409,11 @@ void lidar_status_callback(const std_msgs::Header& lidar_status_msg)
 {
     if(lidar_status_msg.frame_id == "lidar data failed")
     {
-        RECV_LIO_FAIL_FLAG=1;
+        RECV_LIO_FAIL_FLAG.store(true);
     }
     else 
     {
-        RECV_LIO_FAIL_FLAG=0;
+        RECV_LIO_FAIL_FLAG.store(false);
     }
 }
 
@@ -417,8 +462,6 @@ void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
     pcl::PointCloud<PointType>::Ptr laser_cloud_in(new pcl::PointCloud<PointType>());
     pcl::fromROSMsg(*laser_msg, *laser_cloud_in);
 
-    origion_deskewed_cloud = laser_msg;
-
     // 2. downsample new cloud (save memory)
     pcl::PointCloud<PointType>::Ptr laser_cloud_in_ds(new pcl::PointCloud<PointType>());
     static pcl::VoxelGrid<PointType> downSizeFilter;
@@ -464,7 +507,7 @@ void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
 
     // 6. save new cloud
     double timeScanCur = laser_msg->header.stamp.toSec();
-    if (!RECV_LIO_FAIL_FLAG) // if LIO not failed,save
+    if (!RECV_LIO_FAIL_FLAG.load()) // if LIO not failed,save
     {
     cloudQueue.push_back(*laser_cloud_global);
     timeQueue.push_back(timeScanCur);
@@ -483,6 +526,7 @@ void lidar_callback(const sensor_msgs::PointCloud2ConstPtr& laser_msg)
     }
 
     std::lock_guard<std::mutex> lock(mtx_lidar);
+    origion_deskewed_cloud = laser_msg;
     // 8. fuse global cloud
     depthCloud->clear();
     for (int i = 0; i < (int)cloudQueue.size(); ++i)

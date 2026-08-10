@@ -58,10 +58,6 @@ CATKIN_IGNORE
 src/CMakeLists.txt
 *.bag
 datasets
-eskf_lio/Log/daliti.tum
-eskf_lio/Log/mat_out.txt
-eskf_lio/Log/mat_pre.txt
-eskf_lio/Log/feature_tracker_time.txt
-eskf_lio/Log/iekf_processing_time.txt
-eskf_lio/Log/lidar_feature_extract_time.txt
-eskf_lio/Log/tio_optimization_time.txt
+# Runtime trajectories and diagnostic logs are host artifacts rather than
+# source files.
+/eskf_lio/Log/

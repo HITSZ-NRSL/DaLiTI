@@ -440,7 +440,7 @@ Visualization Manager:
           Class: rviz/PointCloud2
           Color: 255; 255; 255
           Color Transformer: Intensity
-          Decay Time: 500
+          Decay Time: 30
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255

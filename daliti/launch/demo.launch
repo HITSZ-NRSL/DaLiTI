@@ -1,7 +1,14 @@
 <launch>
 	<arg name="dataset" default="hitsz" />
 	<arg name="rosbag_file_with_path" default="" />
+	<arg name="trajectory_output_dir" default="$(find eskf_lio)/Log" />
+	<arg name="trajectory_run_id" default="" />
+	<arg name="ikdtree_async_rebuild" default="true" />
+	<arg name="disable_ros1_eol_warnings" default="1" />
 	<param name="dataset" type="string" value="$(arg dataset)" />
+	<param name="mapping/trajectory_output_dir" type="string" value="$(arg trajectory_output_dir)" />
+	<param name="mapping/trajectory_run_id" type="string" value="$(arg trajectory_run_id)" />
+	<param name="mapping/ikdtree_async_rebuild" type="bool" value="$(arg ikdtree_async_rebuild)" />
 	<param name="if_write_res_to_bag" type="int" value="0" />
 	<param name="bag_file_name" type="string" value="~/daliti/src/DaLiTI/eskf_lio/Log/detail_result.bag" />
 
@@ -28,7 +35,9 @@
 		<arg name="dataset" value="$(arg dataset)" />
 	</include>
 	<!-- - Run Rviz -->
-	<include file="$(find daliti)/launch/include/module_rviz.launch" />
+	<include file="$(find daliti)/launch/include/module_rviz.launch">
+		<arg name="disable_ros1_eol_warnings" value="$(arg disable_ros1_eol_warnings)" />
+	</include>
 	<include file="$(find daliti)/launch/include/module_sam.launch" />
 	<include file="$(find eskf_lio)/launch/run.launch">
 		<arg name="rviz" value="false" />

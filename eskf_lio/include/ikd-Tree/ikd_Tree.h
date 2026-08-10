@@ -258,6 +258,7 @@ private:
     // Multi-thread Tree Rebuild
     bool termination_flag = false;
     bool rebuild_flag = false;
+    bool async_rebuild_enabled = true;
     pthread_t rebuild_thread;
     pthread_mutex_t termination_flag_mutex_lock, rebuild_ptr_mutex_lock, working_flag_mutex, search_flag_mutex;
     pthread_mutex_t rebuild_logger_mutex_lock, points_deleted_rebuild_mutex_lock;
@@ -319,6 +320,10 @@ public:
     void set_downsample_param(float downsample_param)
     {
         downsample_size = downsample_param;
+    }
+    void set_async_rebuild(bool enabled)
+    {
+        async_rebuild_enabled = enabled;
     }
     void InitializeKDTree(float delete_param = 0.5, float balance_param = 0.7, float box_length = 0.2);
     int size();

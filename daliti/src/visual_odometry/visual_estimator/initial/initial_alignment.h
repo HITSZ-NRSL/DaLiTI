@@ -107,7 +107,8 @@ public:
     }
 
     // convert odometry from ROS Lidar frame to VINS camera frame
-    vector<float> getOdometry(deque<nav_msgs::Odometry>& odomQueue, double img_time)
+    vector<float> getOdometry(deque<nav_msgs::Odometry>& odomQueue, double img_time,
+                              nav_msgs::Odometry *matched_raw_odometry = nullptr)
     {
         vector<float> odometry_channel;
         odometry_channel.resize(18, -1); // reset id(1), P(3), Q(4), V(3), Ba(3), Bg(3), gravity(1)
@@ -128,15 +129,23 @@ public:
             return odometry_channel;
         }
 
-        // find the odometry time that is the closest to image time
+        // Select the first odometry sample at or immediately before the image
+        // tolerance boundary.  Never fall back to the newest currently available
+        // sample: doing so makes the result depend on callback scheduling.
+        bool found = false;
         for (int i = 0; i < (int)odomQueue.size(); ++i)
         {
-            odomCur = odomQueue[i];
-
-            if (odomCur.header.stamp.toSec() < img_time - 0.0025) // 500Hz imu
+            if (odomQueue[i].header.stamp.toSec() < img_time - 0.0025) // 500Hz imu
                 continue;
-            else
-                break;
+
+            odomCur = odomQueue[i];
+            found = true;
+            break;
+        }
+
+        if (!found)
+        {
+            return odometry_channel;
         }
 
         // time stamp difference still too large
@@ -145,6 +154,9 @@ public:
             ROS_WARN("[getOdometry]time stamp difference still too large");
             return odometry_channel;
         }
+
+        if (matched_raw_odometry != nullptr)
+            *matched_raw_odometry = odomCur;
 
         // convert odometry rotation from lidar ROS frame to VINS camera frame (only rotation, assume lidar, camera, and IMU are close enough)
         tf::Quaternion q_odom_lidar;

@@ -419,15 +419,33 @@ public:
         graphValues.insert(X(key), propState_.pose());
         graphValues.insert(V(key), propState_.v());
         graphValues.insert(B(key), prevBias_);
-        // optimize
-        optimizer.update(graphFactors, graphValues);
-        optimizer.update();
-        
+        // Optimize. Some correction frames make the incremental system
+        // numerically underconstrained. Letting that exception escape kills
+        // this node; roslaunch then respawns it with empty IMU queues at a
+        // scheduler-dependent point in the bag. Recover locally instead so
+        // the next lidar correction can initialize from the queued IMU data.
+        gtsam::Values result;
+        try
+        {
+            optimizer.update(graphFactors, graphValues);
+            optimizer.update();
+            result = optimizer.calculateEstimate();
+        }
+        catch (const std::exception &exception)
+        {
+            ROS_ERROR("IMU preintegration optimization failed at key %d: %s. Resetting the local graph without restarting the node.",
+                      key, exception.what());
+            graphFactors.resize(0);
+            graphValues.clear();
+            resetParams();
+            ++imuPreintegrationResetId;
+            return;
+        }
+
         graphFactors.resize(0);
         graphValues.clear();
         // Overwrite the beginning of the preintegration for the next step.
         
-        gtsam::Values result = optimizer.calculateEstimate();
         prevPose_ = result.at<gtsam::Pose3>(X(key));
         prevVel_ = result.at<gtsam::Vector3>(V(key));
         prevState_ = gtsam::NavState(prevPose_, prevVel_);

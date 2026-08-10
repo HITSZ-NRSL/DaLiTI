@@ -20,25 +20,32 @@ cd YOUR_NAME_OF_WORKSPACE
 docker build -t daliti:latest -f src/DaLiTI/Dockerfile .
 ```
 
-#### 2.2 Run Docker Container
-Use the provided startup script to launch the container with RViz support:
+#### 2.2 Run One Demo
+Run the demo with one absolute rosbag path:
+
 ```bash
 cd src/DaLiTI
-./start_docker.sh
+./run_demo.sh "/absolute/path/to/dataset.bag"
 ```
 
 The script will:
-- Mount the source code directory (`src/DaLiTI`) into the container
-- Enable X11 forwarding for RViz visualization
-- Start an interactive zsh shell with ROS environment pre-configured
 
-#### 2.3 Run Examples in Docker
-Once inside the container, you can run the demo:
-```bash
-roslaunch daliti demo.launch rosbag_file_with_path:="/ws/YOUR/PATH/TO/ROSBAG/XXX.bag"
+- start `daliti:latest` with RViz and available NVIDIA graphics support;
+- mount the rosbag and output directory into the container;
+- wait for all algorithm nodes, then wait another five seconds before playing the bag;
+- stop the container after the complete bag has played;
+- verify trajectory completeness and preserve the TUM trajectory and console log on the host.
+
+Each run creates uniquely named files under `eskf_lio/Log/`:
+
+```text
+daliti_demo_YYYYMMDD_HHMMSS_PID.tum
+daliti_demo_YYYYMMDD_HHMMSS_PID.log
 ```
 
-**Note:** Make sure to place your rosbag files in a location accessible to the container, or mount additional directories when starting the container.
+Rebuild the Docker image after changing source code. The script accepts no
+other command-line options; set `DALITI_DOCKER_IMAGE` only when a different
+image tag is required.
 
 ### 3. Run Examples (Local Installation)
 ```

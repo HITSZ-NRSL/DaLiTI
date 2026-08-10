@@ -67,6 +67,8 @@
 #include "tool_color_printf.hpp"
 #include <chrono>
 #include <cmath>
+#include <ctime>
+#include <iomanip>
 
 
 /*-------------------------------------------------------------------------------------------------------------------*/
@@ -185,10 +187,13 @@ StatesGroup state, last_nodegared_state, last_state;
 //?/ TIS-correlative virables 
 // TIS correlative paras
 nav_msgs::Odometry::ConstPtr g_tis_odom;
-nav_msgs::Odometry::ConstPtr g_tis_odom_last(new nav_msgs::Odometry);
+nav_msgs::Odometry::ConstPtr g_tis_odom_last;
 nav_msgs::Odometry::Ptr g_tis_odom_delta(new nav_msgs::Odometry);
 nav_msgs::Odometry::Ptr g_tis_odom_delta_tframe2tframe(new nav_msgs::Odometry);
 nav_msgs::Odometry::Ptr g_tis_odom_delta_lframe2lframe(new nav_msgs::Odometry);
+int g_tis_failure_id = -1;
+double vio_max_delta_translation = 2.0;
+double vio_max_delta_rotation = 0.7853981633974483;
 const int QUEUE_SIZE = 10;           
 std::queue<int> effct_feat_numQueue; 
 /*-------------------------------------------------------------------------------------------------------------------*/
@@ -388,7 +393,16 @@ nav_msgs::Odometry odom_minus(const nav_msgs::Odometry::ConstPtr &odom1, const n
     tf::quaternionEigenToMsg(delta_quat, result_diff);
     retodom.pose.pose.orientation = result_diff;
 
-    retodom.twist = odom1->twist;
+    // This message represents a state increment.  Carry velocity as an
+    // increment as well; copying odom1's absolute VINS velocity makes the
+    // degeneration branch add that velocity on top of the LIO anchor every
+    // frame.
+    retodom.twist.twist.linear.x = odom1->twist.twist.linear.x - odom2->twist.twist.linear.x;
+    retodom.twist.twist.linear.y = odom1->twist.twist.linear.y - odom2->twist.twist.linear.y;
+    retodom.twist.twist.linear.z = odom1->twist.twist.linear.z - odom2->twist.twist.linear.z;
+    retodom.twist.twist.angular.x = odom1->twist.twist.angular.x - odom2->twist.twist.angular.x;
+    retodom.twist.twist.angular.y = odom1->twist.twist.angular.y - odom2->twist.twist.angular.y;
+    retodom.twist.twist.angular.z = odom1->twist.twist.angular.z - odom2->twist.twist.angular.z;
     return retodom;
 }
 
@@ -471,6 +485,20 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
 void tis_cbk(const nav_msgs::Odometry::ConstPtr &msg_in)
 {
     tis_online = true;
+    const int failure_id = static_cast<int>(std::llround(msg_in->pose.covariance[0]));
+    if (failure_id != g_tis_failure_id)
+    {
+        if (g_tis_failure_id >= 0)
+            ROS_WARN("VINS reset detected (%d -> %d); resetting the visual odometry delta baseline.",
+                     g_tis_failure_id, failure_id);
+        g_tis_failure_id = failure_id;
+        g_tis_odom = msg_in;
+        g_tis_odom_last = msg_in;
+        deltaOdomSetZero(g_tis_odom_delta);
+        deltaOdomSetZero(g_tis_odom_delta_tframe2tframe);
+        deltaOdomSetZero(g_tis_odom_delta_lframe2lframe);
+        return;
+    }
     if (!EKF_stop_flg)
     {
         g_tis_odom = msg_in;
@@ -629,12 +657,12 @@ void map_incremental()
     add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
 }
 
-void saveTrajectoryTUMformat(std::fstream &fout, std::string &stamp, Eigen::Vector3d &xyz, Eigen::Quaterniond &xyzw)
+void saveTrajectoryTUMformat(std::ostream &fout, std::string &stamp, Eigen::Vector3d &xyz, Eigen::Quaterniond &xyzw)
 {
     fout << stamp << " " << xyz[0] << " " << xyz[1] << " " << xyz[2] << " " << xyzw.x() << " " << xyzw.y() << " " << xyzw.z() << " " << xyzw.w() << std::endl;
 }
 
-void saveTrajectoryTUMformat(std::fstream &fout, std::string &stamp, double x, double y, double z, double qx, double qy, double qz, double qw)
+void saveTrajectoryTUMformat(std::ostream &fout, std::string &stamp, double x, double y, double z, double qx, double qy, double qz, double qw)
 {
     fout << stamp << " " << x << " " << y << " " << z << " " << qx << " " << qy << " " << qz << " " << qw << std::endl;
 }
@@ -646,6 +674,9 @@ int main(int argc, char **argv)
     std::string tis_topic;
     std::string lidar_feature_topic;
     bool save_tum_traj;
+    bool ikdtree_async_rebuild;
+    std::string trajectory_output_dir;
+    std::string trajectory_run_id;
 
     /*** variables initialize ***/
     nh.param<std::string>("common/imuTopic", imu_topic, "/livox/imu");
@@ -661,6 +692,11 @@ int main(int argc, char **argv)
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, std::vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, std::vector<double>());
     nh.param<bool>("mapping/save_tum_traj", save_tum_traj, false);
+    nh.param<bool>("mapping/ikdtree_async_rebuild", ikdtree_async_rebuild, true);
+    nh.param<std::string>("mapping/trajectory_output_dir", trajectory_output_dir, std::string(ROOT_DIR) + "Log");
+    nh.param<std::string>("mapping/trajectory_run_id", trajectory_run_id, "");
+    nh.param<double>("mapping/vio_max_delta_translation", vio_max_delta_translation, 2.0);
+    nh.param<double>("mapping/vio_max_delta_rotation", vio_max_delta_rotation, 0.7853981633974483);
     nh.param<double>("common/beta", beta, 0.05);
 
     Lidar_T_wrt_IMU << VEC_FROM_ARRAY(extrinT);
@@ -704,6 +740,8 @@ int main(int argc, char **argv)
 
     std::shared_ptr<ImuProcess> p_imu(new ImuProcess());
     p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
+    ikdtree.set_async_rebuild(ikdtree_async_rebuild);
+    ROS_INFO("ikd-Tree rebuild mode: %s", ikdtree_async_rebuild ? "asynchronous" : "synchronous deterministic");
 
     //  create folder
     std::string command = "mkdir -p " + std::string(ROOT_DIR) + "Log";
@@ -716,6 +754,30 @@ int main(int argc, char **argv)
         std::cout << "~~~~" << ROOT_DIR << " file opened" << std::endl;
     else
         std::cout << "~~~~" << ROOT_DIR << " doesn't exist" << std::endl;
+
+    std::ofstream fout_traj;
+    std::string trajectory_file_path;
+    if (save_tum_traj)
+    {
+        if (trajectory_run_id.empty())
+        {
+            const std::time_t now = std::time(nullptr);
+            std::tm local_time;
+            localtime_r(&now, &local_time);
+            std::ostringstream generated_run_id;
+            generated_run_id << std::put_time(&local_time, "%Y%m%d_%H%M%S") << "_" << getpid();
+            trajectory_run_id = generated_run_id.str();
+        }
+
+        if (!trajectory_output_dir.empty() && trajectory_output_dir.back() != '/')
+            trajectory_output_dir += "/";
+        trajectory_file_path = trajectory_output_dir + "daliti_" + trajectory_run_id + ".tum";
+        fout_traj.open(trajectory_file_path, std::ios::out);
+        if (fout_traj.is_open())
+            ROS_INFO_STREAM("Saving TUM trajectory to " << trajectory_file_path);
+        else
+            ROS_ERROR_STREAM("Failed to open TUM trajectory file: " << trajectory_file_path);
+    }
 
     std::ofstream processing_time_file("~/daliti/src/DaLiTI/eskf_lio/Log/iekf_processing_time.txt", std::ios::out);
 
@@ -1048,6 +1110,17 @@ int main(int argc, char **argv)
                         // state_propagat = state;
 
                         last_nodegared_state = state;
+                        // Keep the LIO anchor and the TIS delta origin on the
+                        // same measurement boundary.  A non-degenerate lidar
+                        // frame can arrive without a new TIS sample.  Clearing
+                        // only the delta in that case leaves g_tis_odom at the
+                        // old degeneration origin; the next TIS callback then
+                        // reapplies the whole old displacement to this new LIO
+                        // anchor and can create a multi-metre state jump.
+                        if (g_tis_odom_last != nullptr)
+                        {
+                            g_tis_odom = g_tis_odom_last;
+                        }
                         deltaOdomSetZero(g_tis_odom_delta);
                         // end of add
                     }
@@ -1124,8 +1197,21 @@ int main(int argc, char **argv)
                 {
                     auto zeta_t_norm = zeta_t / (zeta_l + zeta_t);
                     ROS_INFO("zeta_l: %f, zeta_t: %f, zeta_t_norm: %f", zeta_l, zeta_t, zeta_t_norm);
-                    state = last_state + ( state - last_state ) * (1 - zeta_t_norm) + odomToStateGruop(g_tis_odom_delta_lframe2lframe) * zeta_t_norm;
-                    odomToStateGruop(g_tis_odom_delta_lframe2lframe).display();
+                    StatesGroup tis_delta = odomToStateGruop(g_tis_odom_delta_lframe2lframe);
+                    const double delta_translation = tis_delta.pos_end.norm();
+                    const double delta_rotation = Log(tis_delta.rot_end).norm();
+                    if (!std::isfinite(delta_translation) || !std::isfinite(delta_rotation) ||
+                        delta_translation > vio_max_delta_translation || delta_rotation > vio_max_delta_rotation)
+                    {
+                        ROS_WARN("Rejecting implausible VINS delta: translation %.3f m, rotation %.3f rad.",
+                                 delta_translation, delta_rotation);
+                        deltaOdomSetZero(g_tis_odom_delta_lframe2lframe);
+                    }
+                    else
+                    {
+                        state = last_state + ( state - last_state ) * (1 - zeta_t_norm) + tis_delta * zeta_t_norm;
+                        tis_delta.display();
+                    }
                 }
 
                 last_state = state;
@@ -1143,7 +1229,6 @@ int main(int argc, char **argv)
 
                 if (save_tum_traj)
                 {
-                    static std::fstream fout_traj("/mnt/d/datasets/daliti.tum", std::ios::out);
                     static std::ostringstream stamp;
                     stamp.str("");
                     if (fout_traj.is_open())
@@ -1288,6 +1373,12 @@ int main(int argc, char **argv)
             {
                 processing_time_file << std::fixed << std::setprecision(6) << Measures.lidar_beg_time << " " << duration << " ms" << std::endl;
             }
+
+            // Do not process a backlog of lidar frames against one stale TIS
+            // snapshot. Drain callbacks at every lidar-frame boundary so the
+            // next frame sees all VINS/IMU propagation available at that
+            // point, independent of how many lidar packets were buffered.
+            ros::spinOnce();
         }
         status = ros::ok();
         rate.sleep();
