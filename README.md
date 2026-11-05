@@ -6,6 +6,8 @@
 This repository contains code for a Degradation aware LiDAR-Thermal-Inertial SLAM, which is accepted by IEEE RA-L, June 2025.
 
 
+What changed in this version: [CHANGES.md](CHANGES.md).
+
 ### 1. Dependency
 - ROS noetic (tested)
 - Basic libraries for common SLAM (e.g. openCV 4, pcl-1.10, ceres-solver-1.14 etc.)
@@ -13,39 +15,36 @@ This repository contains code for a Degradation aware LiDAR-Thermal-Inertial SLA
 
 ### 2. Using Docker (Recommended)
 
-#### 2.1 Build Docker Image
-First, navigate to your workspace and build the Docker image:
+#### 2.1 Docker Image
+`run_demo.sh` builds the image automatically the first time it runs (tag `daliti:<git commit>`, built from the
+committed code; this takes several minutes and needs internet access; set `http_proxy` / `https_proxy` if your network
+requires a proxy). To build an image by hand from the workspace root and use it:
 ```bash
 cd YOUR_NAME_OF_WORKSPACE
 docker build -t daliti:latest -f src/DaLiTI/Dockerfile .
+cd src/DaLiTI && ./run_demo.sh --image daliti:latest /absolute/path/to/dataset.bag
 ```
 
-#### 2.2 Run One Demo
-Run the demo with one absolute rosbag path:
-
+#### 2.2 Run a Sequence
 ```bash
 cd src/DaLiTI
-./run_demo.sh "/absolute/path/to/dataset.bag"
+# indoor smoke sequence (whole bag)
+./run_demo.sh /absolute/path/to/daliti-indoor-smoke.bag
+# rooftop smoke sequence (90 s .. 150 s, rooftop camera calibration), evaluated against the ground truth
+./run_demo.sh --profile rooftop --gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum /absolute/path/to/rooftop.bag
 ```
+`./run_demo.sh --help` lists the options: `--profile`, `--start` / `--duration` (playback window), `--camera NAME`
+(`daliti/config/NAME_camera.yaml`), `--image-topic`, `--gt`, `--image`, `--rebuild`.
 
-The script will:
-
-- start `daliti:latest` with RViz and available NVIDIA graphics support;
-- mount the rosbag and output directory into the container;
-- wait for all algorithm nodes, then wait another five seconds before playing the bag;
-- stop the container after the complete bag has played;
-- verify trajectory completeness and preserve the TUM trajectory and console log on the host.
-
-Each run creates uniquely named files under `eskf_lio/Log/`:
+The script starts the container with RViz (and NVIDIA graphics if available), waits for all nodes, plays the bag (or
+the selected window), stops the container, checks that the trajectory covers the window, and evaluates it. Each run
+writes to `eskf_lio/Log/`:
 
 ```text
-daliti_demo_YYYYMMDD_HHMMSS_PID.tum
-daliti_demo_YYYYMMDD_HHMMSS_PID.log
+daliti_demo_YYYYMMDD_HHMMSS_PID.tum        poses, stamped with the time of the state (end of each LiDAR scan)
+daliti_demo_YYYYMMDD_HHMMSS_PID.log        console log
+daliti_demo_YYYYMMDD_HHMMSS_PID_eval.json  path length, end-to-start distance, ATE (with --gt)
 ```
-
-Rebuild the Docker image after changing source code. The script accepts no
-other command-line options; set `DALITI_DOCKER_IMAGE` only when a different
-image tag is required.
 
 ### 3. Run Examples (Local Installation)
 ```
