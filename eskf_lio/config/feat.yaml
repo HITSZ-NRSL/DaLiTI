@@ -50,3 +50,23 @@ mapping:
   extrinsic_est_en: false # true: enable the online estimation of IMU-LiDAR extrinsic
   extrinsic_T: [0.0, 0.0, 0.0]
   extrinsic_R: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+  # --- degradation-aware fusion ---
+  # While the LiDAR is degraded (update stopped or zeta_l_norm < vio_fusion_max_zeta_l) the IMU propagates the state
+  # and the thermal-inertial odometry (VINS) motion is fused as a position/velocity measurement.
+  vio_fusion_enable: true
+  vio_fusion_max_zeta_l: 0.5
+  vio_pos_sigma: 0.03          # [m] per-frame VINS displacement noise
+  vio_vel_sigma: 0.10          # [m/s]
+  vio_max_speed: 2.5           # [m/s] reject VINS motion faster than this
+  lidar_weight_by_zeta: true   # LiDAR point noise / zeta_l_norm
+  gravity_align: true          # world z axis = up at start-up
+  # ground robot: non-holonomic constraint while degraded (assumes the platform drives along the IMU x axis)
+  nhc_enable: true
+  nhc_lever: 0.12              # [m] body lateral velocity = nhc_lever * yaw rate
+  nhc_sigma_lat: 0.08
+  nhc_sigma_vert: 0.05
+  nhc_vio_lat_scale: 5.0
+  # gravity-referenced roll/pitch correction while the LiDAR update is stopped
+  tilt_correction_enable: true
+  tilt_tau: 10.0
+  fusion_debug_log: false      # one diagnostic line per LiDAR frame

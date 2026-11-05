@@ -33,6 +33,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 #include <omp.h>
+#include <algorithm>
 #include <mutex>
 #include <math.h>
 #include <thread>
@@ -178,24 +179,61 @@ V3D pos_lid;
 /*-------------------------------------------------------------------------------------------------------------------*/
 //?/ estimator inputs and output
 MeasureGroup Measures;
-StatesGroup state, last_nodegared_state, last_state;
+StatesGroup state;
+// Posterior of the previous frame (anchor of the VINS motion measurement).
+StatesGroup last_post_state;
+double last_post_time = -1.0;
+bool have_last_post = false;
 /*-------------------------------------------------------------------------------------------------------------------*/
 /*-------------------------------------------------------------------------------------------------------------------*/
 
 /*-------------------------------------------------------------------------------------------------------------------*/
 /*-------------------------------------------------------------------------------------------------------------------*/
-//?/ TIS-correlative virables 
-// TIS correlative paras
-nav_msgs::Odometry::ConstPtr g_tis_odom;
-nav_msgs::Odometry::ConstPtr g_tis_odom_last;
-nav_msgs::Odometry::Ptr g_tis_odom_delta(new nav_msgs::Odometry);
-nav_msgs::Odometry::Ptr g_tis_odom_delta_tframe2tframe(new nav_msgs::Odometry);
-nav_msgs::Odometry::Ptr g_tis_odom_delta_lframe2lframe(new nav_msgs::Odometry);
+//?/ Thermal-inertial odometry (TIS / VINS) used as a motion measurement while the LiDAR is degraded.
+// The VINS IMU-propagated odometry is buffered with its timestamps so that its motion can be taken
+// exactly between two LiDAR frame ends, expressed in the VINS body frame (independent of the drift
+// of the VINS world frame).
+struct VinsSample
+{
+    double t;
+    Eigen::Vector3d p;    // IMU position in vins_world
+    Eigen::Quaterniond q; // IMU orientation in vins_world
+    Eigen::Vector3d v;    // IMU velocity in vins_world
+};
+std::deque<VinsSample> g_vins_buf;
 int g_tis_failure_id = -1;
-double vio_max_delta_translation = 2.0;
-double vio_max_delta_rotation = 0.7853981633974483;
-const int QUEUE_SIZE = 10;           
-std::queue<int> effct_feat_numQueue; 
+bool tis_online = false;
+
+bool vio_fusion_enable = true;
+double vio_fusion_max_zeta_l = 0.5; // fuse when the last normalized LiDAR factor is below this, or the LiDAR update is stopped
+bool fusion_debug_log = false;      // per-frame fusion diagnostics (one line per LiDAR frame)
+double vio_min_weight = 0.1;        // floor of the VINS weight
+double vio_chi2_gate = 22.46;       // chi2 99.9 %: reject VINS motion inconsistent with the filter (0 = off)
+// Non-holonomic constraint for ground robots (used only while the LiDAR is degraded): the body-frame
+// lateral velocity is lever * yaw_rate and the vertical velocity is zero; VINS then only supplies the
+// forward motion. Off by default (handheld / aerial platforms violate it).
+bool nhc_enable = false;
+double nhc_lever = 0.12;            // [m] lateral velocity = nhc_lever * body yaw rate (IMU ahead of the turn centre)
+double nhc_sigma_lat = 0.08;        // [m/s]
+double nhc_sigma_vert = 0.05;       // [m/s]
+double nhc_vio_lat_scale = 5.0;     // VINS lateral / vertical noise = this x forward noise when the NHC is on
+// Gravity-referenced roll/pitch correction while the LiDAR is degraded (complementary filter on the specific force,
+// with the filter's own acceleration removed). Without it, roll/pitch drift with the gyro bias (3-4 deg in 140 s of
+// smoke), the forward motion leaks into z and the tilt is locked into the map after the smoke.
+bool tilt_correction_enable = true;
+double tilt_tau = 10.0;             // [s] time constant of the correction
+double tilt_max_dyn = 2.0;          // [m/s^2] skip frames whose specific force deviates more than this from g
+double tilt_max_acc = 0.6;          // [m/s^2] skip frames with a larger filter acceleration (manoeuvres, update jumps)
+double vio_pos_sigma = 0.03;        // [m] noise of the per-frame VINS displacement
+double vio_vel_sigma = 0.10;        // [m/s] noise of the VINS body-frame velocity
+double vio_max_speed = 3.0;         // [m/s] gate on the VINS displacement / velocity
+double vio_wait_max = 0.03;         // [s] max wall time to wait for VINS samples that cover the frame end
+bool lidar_weight_by_zeta = true;   // inflate the LiDAR point noise by 1 / zeta_l_norm
+double lidar_min_weight = 0.05;
+double prev_zeta_l_norm = 1.0, prev_zeta_t_norm = 0.0;
+
+const int QUEUE_SIZE = 10;
+std::queue<int> effct_feat_numQueue;
 /*-------------------------------------------------------------------------------------------------------------------*/
 /*-------------------------------------------------------------------------------------------------------------------*/
 
@@ -218,47 +256,6 @@ void SigHandle(int sig)
     flg_exit = true;
     ROS_WARN("catch sig %d", sig);
     sig_buffer.notify_all();
-}
-
-StatesGroup odomToStateGruop(const nav_msgs::Odometry::Ptr &odom)
-{
-    StatesGroup retstate;
-
-    if (odom != nullptr)
-    {
-        retstate.pos_end << odom->pose.pose.position.x, odom->pose.pose.position.y, odom->pose.pose.position.z;
-        Eigen::Quaterniond eigenQuat(odom->pose.pose.orientation.w, odom->pose.pose.orientation.x, odom->pose.pose.orientation.y, odom->pose.pose.orientation.z);
-        retstate.rot_end = eigenQuat.toRotationMatrix();
-        retstate.vel_end << odom->twist.twist.linear.x, odom->twist.twist.linear.y, odom->twist.twist.linear.z;
-
-        retstate.bias_g << odom->pose.covariance[4], odom->pose.covariance[5], odom->pose.covariance[6];
-        retstate.bias_a << odom->pose.covariance[1], odom->pose.covariance[2], odom->pose.covariance[3];
-        retstate.gravity << 0, 0, odom->pose.covariance[7];
-        // retstate.cov = ; //TODO
-    }
-    else
-    {
-        ROS_ERROR("odom null");
-    }
-    return retstate;
-}
-
-void deltaOdomSetZero(nav_msgs::Odometry::Ptr &odom)
-{
-    odom->pose.pose.position.x = 0;
-    odom->pose.pose.position.y = 0;
-    odom->pose.pose.position.z = 0;
-    odom->pose.pose.orientation.w = 1;
-    odom->pose.pose.orientation.x = 0;
-    odom->pose.pose.orientation.y = 0;
-    odom->pose.pose.orientation.z = 0;
-    // TODO : set covariance zero
-    odom->twist.twist.angular.x = 0;
-    odom->twist.twist.angular.y = 0;
-    odom->twist.twist.angular.z = 0;
-    odom->twist.twist.linear.x = 0;
-    odom->twist.twist.linear.y = 0;
-    odom->twist.twist.linear.z = 0;
 }
 
 // project lidar frame to world
@@ -373,68 +370,9 @@ void lasermap_fov_segment()
         kdtree_delete_counter = ikdtree.Delete_Point_Boxes(cub_needrm);
 }
 
-nav_msgs::Odometry odom_minus(const nav_msgs::Odometry::ConstPtr &odom1, const nav_msgs::Odometry::ConstPtr &odom2)
-{
-    nav_msgs::Odometry retodom;
-    retodom.header = odom1->header;
-    retodom.child_frame_id = odom1->child_frame_id;
-    retodom.pose.covariance = odom1->pose.covariance;
-    retodom.pose.pose.position.x = odom1->pose.pose.position.x - odom2->pose.pose.position.x;
-    retodom.pose.pose.position.y = odom1->pose.pose.position.y - odom2->pose.pose.position.y;
-    retodom.pose.pose.position.z = odom1->pose.pose.position.z - odom2->pose.pose.position.z;
-
-    Eigen::Quaterniond quat1(odom1->pose.pose.orientation.w, odom1->pose.pose.orientation.x, odom1->pose.pose.orientation.y, odom1->pose.pose.orientation.z);
-    Eigen::Quaterniond quat2(odom2->pose.pose.orientation.w, odom2->pose.pose.orientation.x, odom2->pose.pose.orientation.y, odom2->pose.pose.orientation.z);
-    quat1.normalize();
-    quat2.normalize();
-    Eigen::Quaterniond delta_quat = quat1 * quat2.conjugate();
-    delta_quat.normalize();
-    geometry_msgs::Quaternion result_diff;
-    tf::quaternionEigenToMsg(delta_quat, result_diff);
-    retodom.pose.pose.orientation = result_diff;
-
-    // This message represents a state increment.  Carry velocity as an
-    // increment as well; copying odom1's absolute VINS velocity makes the
-    // degeneration branch add that velocity on top of the LIO anchor every
-    // frame.
-    retodom.twist.twist.linear.x = odom1->twist.twist.linear.x - odom2->twist.twist.linear.x;
-    retodom.twist.twist.linear.y = odom1->twist.twist.linear.y - odom2->twist.twist.linear.y;
-    retodom.twist.twist.linear.z = odom1->twist.twist.linear.z - odom2->twist.twist.linear.z;
-    retodom.twist.twist.angular.x = odom1->twist.twist.angular.x - odom2->twist.twist.angular.x;
-    retodom.twist.twist.angular.y = odom1->twist.twist.angular.y - odom2->twist.twist.angular.y;
-    retodom.twist.twist.angular.z = odom1->twist.twist.angular.z - odom2->twist.twist.angular.z;
-    return retodom;
-}
-
-nav_msgs::Odometry odom_plus(const nav_msgs::Odometry::ConstPtr &odom1, const nav_msgs::Odometry::ConstPtr &odom2)
-{
-    nav_msgs::Odometry retodom;
-    retodom.header = odom1->header;
-    retodom.child_frame_id = odom1->child_frame_id;
-    retodom.pose.covariance = odom1->pose.covariance;
-    retodom.pose.pose.position.x = odom1->pose.pose.position.x + odom2->pose.pose.position.x;
-    retodom.pose.pose.position.y = odom1->pose.pose.position.y + odom2->pose.pose.position.y;
-    retodom.pose.pose.position.z = odom1->pose.pose.position.z + odom2->pose.pose.position.z;
-
-    Eigen::Quaterniond quat1(odom1->pose.pose.orientation.w, odom1->pose.pose.orientation.x, odom1->pose.pose.orientation.y, odom1->pose.pose.orientation.z);
-    Eigen::Quaterniond quat2(odom2->pose.pose.orientation.w, odom2->pose.pose.orientation.x, odom2->pose.pose.orientation.y, odom2->pose.pose.orientation.z);
-    quat1.normalize();
-    quat2.normalize();
-    Eigen::Quaterniond sum_quat = quat1 * quat2;
-    sum_quat.normalize();
-    geometry_msgs::Quaternion result_sum;
-    tf::quaternionEigenToMsg(sum_quat, result_sum);
-    retodom.pose.pose.orientation = result_sum;
-
-    retodom.twist = odom1->twist;
-    return retodom;
-}
-
-
 /*-------------------------------------------------------------------------------------------------------------------*/
 //?/ call back funcs
 long lidar_cnt = 0;
-bool tis_online = false;
 void feat_points_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
 {
     lidar_frame_counter_num++;
@@ -489,31 +427,189 @@ void tis_cbk(const nav_msgs::Odometry::ConstPtr &msg_in)
     if (failure_id != g_tis_failure_id)
     {
         if (g_tis_failure_id >= 0)
-            ROS_WARN("VINS reset detected (%d -> %d); resetting the visual odometry delta baseline.",
-                     g_tis_failure_id, failure_id);
+            ROS_WARN("VINS reset detected (%d -> %d); clearing the VINS motion buffer.", g_tis_failure_id, failure_id);
         g_tis_failure_id = failure_id;
-        g_tis_odom = msg_in;
-        g_tis_odom_last = msg_in;
-        deltaOdomSetZero(g_tis_odom_delta);
-        deltaOdomSetZero(g_tis_odom_delta_tframe2tframe);
-        deltaOdomSetZero(g_tis_odom_delta_lframe2lframe);
+        g_vins_buf.clear();
+    }
+    VinsSample s;
+    s.t = msg_in->header.stamp.toSec();
+    const auto &pp = msg_in->pose.pose.position;
+    const auto &qq = msg_in->pose.pose.orientation;
+    const auto &vv = msg_in->twist.twist.linear;
+    s.p << pp.x, pp.y, pp.z;
+    s.q = Eigen::Quaterniond(qq.w, qq.x, qq.y, qq.z);
+    s.v << vv.x, vv.y, vv.z;
+    const double qn = s.q.norm();
+    if (!s.p.allFinite() || !s.v.allFinite() || !std::isfinite(qn) || qn < 0.5)
         return;
-    }
-    if (!EKF_stop_flg)
+    s.q.normalize();
+    if (!g_vins_buf.empty() && s.t <= g_vins_buf.back().t)
     {
-        g_tis_odom = msg_in;
-        // TODO g_tis_odom_delta setZero
+        if (s.t < g_vins_buf.back().t - 1.0)
+            g_vins_buf.clear(); // time jumped backwards (bag restarted)
+        else
+            return;             // duplicate / out of order
     }
-    else
+    g_vins_buf.push_back(s);
+    while (!g_vins_buf.empty() && g_vins_buf.front().t < s.t - 5.0)
+        g_vins_buf.pop_front();
+}
+
+// VINS state at time t (linear interpolation / slerp). False if t is not covered by the buffer.
+bool vinsAt(const double t, VinsSample &out)
+{
+    if (g_vins_buf.size() < 2 || t < g_vins_buf.front().t || t > g_vins_buf.back().t)
+        return false;
+    auto it = std::lower_bound(g_vins_buf.begin(), g_vins_buf.end(), t,
+                               [](const VinsSample &a, const double tt) { return a.t < tt; });
+    if (it == g_vins_buf.begin())
     {
-        *g_tis_odom_delta = odom_minus(msg_in, g_tis_odom);
-        g_tis_odom_delta->header.frame_id = "camera_init";
+        out = *it;
+        return true;
     }
-    if(g_tis_odom_last == nullptr)
-        g_tis_odom_last = msg_in;
-    *g_tis_odom_delta_tframe2tframe = odom_minus(msg_in, g_tis_odom_last);
-    g_tis_odom_last = msg_in;
-    *g_tis_odom_delta_lframe2lframe = odom_plus(g_tis_odom_delta_lframe2lframe, g_tis_odom_delta_tframe2tframe);
+    const VinsSample &b = *it;
+    const VinsSample &a = *(it - 1);
+    const double span = b.t - a.t;
+    if (span > 0.1)
+        return false; // gap in the VINS stream
+    const double r = span > 1e-9 ? (t - a.t) / span : 0.0;
+    out.t = t;
+    out.p = a.p + r * (b.p - a.p);
+    out.v = a.v + r * (b.v - a.v);
+    out.q = a.q.slerp(r, b.q);
+    return true;
+}
+
+// EKF update with the thermal-inertial (VINS) motion between the previous frame end t0 and this
+// frame end t1. Measurements: position = previous posterior + previous attitude * VINS displacement
+// (taken in the VINS body frame at t0), and velocity = attitude * VINS body-frame velocity at t1.
+// Both are invariant to the drift of the VINS world frame. Only position and velocity are corrected:
+// the attitude keeps coming from the gyro, which drifts far less than the thermal VIO in smoke.
+// Masked EKF update: only the rows listed in `rows` of the state are corrected (Joseph form).
+template <int M>
+bool maskedUpdate(StatesGroup &st, const Eigen::Matrix<double, M, DIM_OF_STATES> &H, const Eigen::Matrix<double, M, 1> &y,
+                  const Eigen::Matrix<double, M, M> &R, const std::vector<std::pair<int, int>> &rows, double *d2_out = nullptr)
+{
+    const Eigen::Matrix<double, M, M> S = H * st.cov * H.transpose() + R;
+    const Eigen::Matrix<double, M, M> S_inv = S.inverse();
+    if (d2_out)
+        *d2_out = y.dot(S_inv * y);
+    Eigen::Matrix<double, DIM_OF_STATES, M> K = st.cov * H.transpose() * S_inv;
+    Eigen::Matrix<double, DIM_OF_STATES, M> Km = Eigen::Matrix<double, DIM_OF_STATES, M>::Zero();
+    for (const auto &r : rows)
+        Km.middleRows(r.first, r.second) = K.middleRows(r.first, r.second);
+    const Eigen::Matrix<double, DIM_OF_STATES, 1> dx = Km * y;
+    if (!dx.allFinite())
+        return false;
+    st += dx;
+    const Eigen::Matrix<double, DIM_OF_STATES, DIM_OF_STATES> IKH =
+        Eigen::Matrix<double, DIM_OF_STATES, DIM_OF_STATES>::Identity() - Km * H;
+    st.cov = IKH * st.cov * IKH.transpose() + Km * R * Km.transpose();
+    return true;
+}
+
+// Non-holonomic constraint (ground robot): body lateral velocity = lever * yaw rate, vertical velocity = 0.
+bool applyNhc(StatesGroup &st, const double yaw_rate)
+{
+    const M3D Rt = st.rot_end.transpose();
+    Eigen::Matrix<double, 2, DIM_OF_STATES> H = Eigen::Matrix<double, 2, DIM_OF_STATES>::Zero();
+    H.block<1, 3>(0, 12) = Rt.row(1);
+    H.block<1, 3>(1, 12) = Rt.row(2);
+    const V3D vb = Rt * st.vel_end;
+    Eigen::Matrix<double, 2, 1> y(nhc_lever * yaw_rate - vb(1), -vb(2));
+    Eigen::Matrix<double, 2, 2> R = Eigen::Matrix<double, 2, 2>::Zero();
+    R(0, 0) = nhc_sigma_lat * nhc_sigma_lat;
+    R(1, 1) = nhc_sigma_vert * nhc_sigma_vert;
+    return maskedUpdate<2>(st, H, y, R, {{12, 3}});
+}
+
+// Complementary roll/pitch correction: rotate the attitude so that the measured specific force (world frame,
+// minus the filter acceleration) moves toward +z by a fraction dt / tau of the error. Yaw is untouched.
+bool tiltCorrection(StatesGroup &st, const MeasureGroup &meas, const double acc_scale, const V3D &acc_world, const double dt)
+{
+    if (meas.imu.empty() || dt <= 0)
+        return false;
+    V3D f_b(Zero3d);
+    for (const auto &m : meas.imu)
+        f_b += V3D(m->linear_acceleration.x, m->linear_acceleration.y, m->linear_acceleration.z);
+    f_b = f_b / double(meas.imu.size()) * acc_scale - st.bias_a;
+    if (acc_world.norm() > tilt_max_acc)
+        return false; // a horizontal velocity jump barely changes |g_up| but tilts its direction
+    const V3D g_up = st.rot_end * f_b - acc_world; // should be (0, 0, +g)
+    if (!g_up.allFinite() || std::fabs(g_up.norm() - G_m_s2) > tilt_max_dyn)
+        return false;
+    const V3D u = g_up.normalized(), ez(0, 0, 1);
+    const V3D axis = u.cross(ez);
+    const double s_ang = axis.norm();
+    if (s_ang < 1e-6)
+        return true;
+    const double ang = std::atan2(s_ang, u.dot(ez)) * std::min(1.0, dt / tilt_tau);
+    st.rot_end = Eigen::AngleAxisd(ang, axis / s_ang).toRotationMatrix() * st.rot_end;
+    return true;
+}
+
+// returns 1 = fused, -1 = VINS samples do not cover [t0, t1], -2 = rejected by the speed gate, -3 = numerical failure,
+// -4 = rejected by the chi2 consistency gate
+int fuseVinsMotion(StatesGroup &st, const StatesGroup &post_prev, const double t0, const double t1,
+                   const double weight, Eigen::Vector3d &dp_body_out)
+{
+    const double wait_start = ros::WallTime::now().toSec();
+    while (ros::ok() && (g_vins_buf.empty() || g_vins_buf.back().t < t1) &&
+           ros::WallTime::now().toSec() - wait_start < vio_wait_max)
+    {
+        ros::spinOnce(); // VINS samples are produced from the same IMU stream: wait a few ms for them
+        usleep(500);
+    }
+    VinsSample a, b;
+    const double dt = t1 - t0;
+    if (dt <= 1e-3 || dt > 0.5 || !vinsAt(t0, a) || !vinsAt(t1, b))
+        return -1;
+    const Eigen::Vector3d dp_body = a.q.conjugate() * (b.p - a.p);
+    const Eigen::Vector3d v_body = b.q.conjugate() * b.v;
+    if (!dp_body.allFinite() || !v_body.allFinite() || dp_body.norm() > vio_max_speed * dt || v_body.norm() > vio_max_speed)
+    {
+        ROS_WARN_THROTTLE(2.0, "Rejecting implausible VINS motion: displacement %.3f m in %.3f s, speed %.3f m/s.",
+                          dp_body.norm(), dt, v_body.norm());
+        return -2;
+    }
+    dp_body_out = dp_body;
+    const double w = std::max(weight, vio_min_weight);
+    Eigen::Matrix<double, 6, DIM_OF_STATES> H = Eigen::Matrix<double, 6, DIM_OF_STATES>::Zero();
+    H.block<3, 3>(0, 3).setIdentity();  // position
+    H.block<3, 3>(3, 12).setIdentity(); // velocity
+    Eigen::Matrix<double, 6, 6> R = Eigen::Matrix<double, 6, 6>::Zero();
+    // the anchor (previous posterior) is uncertain too: add its covariance to the displacement noise
+    // Body-frame anisotropic noise: with the non-holonomic constraint the IMU+NHC carry the lateral / vertical
+    // motion and the VINS mainly supplies the forward motion (its vertical drift caused metres of z error).
+    const double k_lv = nhc_enable ? nhc_vio_lat_scale : 1.0;
+    const V3D sp2 = V3D(1.0, k_lv * k_lv, k_lv * k_lv) * (vio_pos_sigma * vio_pos_sigma / w);
+    const V3D sv2 = V3D(1.0, k_lv * k_lv, k_lv * k_lv) * (vio_vel_sigma * vio_vel_sigma / w);
+    R.block<3, 3>(0, 0) = post_prev.rot_end * sp2.asDiagonal() * post_prev.rot_end.transpose() + post_prev.cov.block<3, 3>(3, 3);
+    R.block<3, 3>(3, 3) = st.rot_end * sv2.asDiagonal() * st.rot_end.transpose();
+    Eigen::Matrix<double, 6, 1> y;
+    y.head<3>() = post_prev.pos_end + post_prev.rot_end * dp_body - st.pos_end;
+    y.tail<3>() = st.rot_end * v_body - st.vel_end;
+    const Eigen::Matrix<double, 6, 6> S = H * st.cov * H.transpose() + R;
+    const Eigen::Matrix<double, 6, 6> S_inv = S.inverse();
+    const double d2 = y.dot(S_inv * y);
+    if (vio_chi2_gate > 0 && d2 > vio_chi2_gate)
+    {
+        ROS_WARN_THROTTLE(2.0, "Rejecting VINS motion by the chi2 gate: d2 %.1f (dp %.3f m vs filter %.3f m).", d2,
+                 dp_body.norm(), (post_prev.rot_end.transpose() * (st.pos_end - post_prev.pos_end)).norm());
+        return -4;
+    }
+    Eigen::Matrix<double, DIM_OF_STATES, 6> K = st.cov * H.transpose() * S_inv;
+    for (int r = 0; r < DIM_OF_STATES; ++r)
+        if (!((r >= 3 && r < 6) || (r >= 12 && r < 15)))
+            K.row(r).setZero();
+    const Eigen::Matrix<double, DIM_OF_STATES, 1> dx = K * y;
+    if (!dx.allFinite())
+        return -3;
+    st += dx;
+    const Eigen::Matrix<double, DIM_OF_STATES, DIM_OF_STATES> IKH =
+        Eigen::Matrix<double, DIM_OF_STATES, DIM_OF_STATES>::Identity() - K * H;
+    st.cov = IKH * st.cov * IKH.transpose() + K * R * K.transpose(); // Joseph form (K rows are masked)
+    return 1;
 }
 
 void tn_cbk(const sensor_msgs::Image::ConstPtr &msg_in)
@@ -541,6 +637,7 @@ void lidar_status_callback(const std_msgs::Header &lidar_status_msg)
 
 /*-------------------------------------------------------------------------------------------------------------------*/
 double sync_lidar_timeout = 0;
+double last_scan_duration = 0.1; // scan period, used for scans without points
 double last_integrated_time = 0;
 bool sync_has_first_frame = 0;
 
@@ -571,7 +668,16 @@ bool sync_packages(MeasureGroup &meas)
         meas.lidar.reset(new PointCloudXYZI());
         pcl::fromROSMsg(*(lidar_buffer.front()), *(meas.lidar));
         meas.lidar_beg_time = lidar_buffer.front()->header.stamp.toSec();
-        observation_end_time = meas.lidar_beg_time + meas.lidar->points.back().normal_z; 
+        // A scan can be empty when the LiDAR is fully blocked (dense smoke): points.back() on it crashed the node.
+        if (meas.lidar->points.empty())
+            observation_end_time = meas.lidar_beg_time + last_scan_duration;
+        else
+        {
+            observation_end_time = meas.lidar_beg_time + meas.lidar->points.back().normal_z;
+            const double d = meas.lidar->points.back().normal_z;
+            if (d > 0.02 && d < 0.5)
+                last_scan_duration = d;
+        }
         meas.observation_end_time = observation_end_time;
         // std::cout << "timespan: " << meas.lidar->points.back().normal_z << ", point end ratio: " << meas.lidar->points.back().normal_x << std::endl;
         lidar_pushed = true;
@@ -695,8 +801,34 @@ int main(int argc, char **argv)
     nh.param<bool>("mapping/ikdtree_async_rebuild", ikdtree_async_rebuild, true);
     nh.param<std::string>("mapping/trajectory_output_dir", trajectory_output_dir, std::string(ROOT_DIR) + "Log");
     nh.param<std::string>("mapping/trajectory_run_id", trajectory_run_id, "");
-    nh.param<double>("mapping/vio_max_delta_translation", vio_max_delta_translation, 2.0);
-    nh.param<double>("mapping/vio_max_delta_rotation", vio_max_delta_rotation, 0.7853981633974483);
+    nh.param<bool>("mapping/vio_fusion_enable", vio_fusion_enable, true);
+    nh.param<bool>("mapping/fusion_debug_log", fusion_debug_log, false);
+    nh.param<double>("mapping/vio_min_weight", vio_min_weight, 0.1);
+    nh.param<double>("mapping/vio_chi2_gate", vio_chi2_gate, 22.46);
+    nh.param<bool>("mapping/nhc_enable", nhc_enable, false);
+    nh.param<double>("mapping/nhc_lever", nhc_lever, 0.12);
+    nh.param<double>("mapping/nhc_sigma_lat", nhc_sigma_lat, 0.08);
+    nh.param<double>("mapping/nhc_sigma_vert", nhc_sigma_vert, 0.05);
+    nh.param<double>("mapping/nhc_vio_lat_scale", nhc_vio_lat_scale, 5.0);
+    nh.param<bool>("mapping/tilt_correction_enable", tilt_correction_enable, true);
+    nh.param<double>("mapping/tilt_tau", tilt_tau, 10.0);
+    nh.param<double>("mapping/tilt_max_dyn", tilt_max_dyn, 2.0);
+    nh.param<double>("mapping/tilt_max_acc", tilt_max_acc, 0.6);
+    nh.param<double>("mapping/vio_fusion_max_zeta_l", vio_fusion_max_zeta_l, 0.5);
+    nh.param<double>("mapping/vio_pos_sigma", vio_pos_sigma, 0.03);
+    nh.param<double>("mapping/vio_vel_sigma", vio_vel_sigma, 0.10);
+    nh.param<double>("mapping/vio_max_speed", vio_max_speed, 3.0);
+    nh.param<double>("mapping/vio_wait_max", vio_wait_max, 0.03);
+    nh.param<bool>("mapping/lidar_weight_by_zeta", lidar_weight_by_zeta, true);
+    nh.param<double>("mapping/lidar_min_weight", lidar_min_weight, 0.05);
+    bool gravity_align = true;
+    double gyr_bias_rw = 5.0e-5, acc_bias_rw = 1.5e-3, init_bg_std = 1.0e-3, init_ba_std = 5.0e-2, init_grav_std = 1.0e-2;
+    nh.param<bool>("mapping/gravity_align", gravity_align, true);
+    nh.param<double>("mapping/gyr_bias_rw", gyr_bias_rw, 5.0e-5);
+    nh.param<double>("mapping/acc_bias_rw", acc_bias_rw, 1.5e-3);
+    nh.param<double>("mapping/init_bg_std", init_bg_std, 1.0e-3);
+    nh.param<double>("mapping/init_ba_std", init_ba_std, 5.0e-2);
+    nh.param<double>("mapping/init_grav_std", init_grav_std, 1.0e-2);
     nh.param<double>("common/beta", beta, 0.05);
 
     Lidar_T_wrt_IMU << VEC_FROM_ARRAY(extrinT);
@@ -719,7 +851,6 @@ int main(int argc, char **argv)
     ros::Publisher pubLaserCloudMap = nh.advertise<sensor_msgs::PointCloud2>("/Laser_map", 100);
     ros::Publisher pubOdomAftMapped = nh.advertise<nav_msgs::Odometry>("/aft_mapped_to_init", 10);
     ros::Publisher pubPath = nh.advertise<nav_msgs::Path>("/path", 10);
-    ros::Publisher pub_tis_odom_delta = nh.advertise<nav_msgs::Odometry>("/vio_odom_delta", 10);
 
     geometry_msgs::PoseStamped msg_body_pose;
     nav_msgs::Path path;
@@ -740,6 +871,16 @@ int main(int argc, char **argv)
 
     std::shared_ptr<ImuProcess> p_imu(new ImuProcess());
     p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
+    p_imu->gravity_align = gravity_align;
+    p_imu->gyr_bias_rw = gyr_bias_rw;
+    p_imu->acc_bias_rw = acc_bias_rw;
+    p_imu->init_bg_std = init_bg_std;
+    p_imu->init_ba_std = init_ba_std;
+    p_imu->init_grav_std = init_grav_std;
+    nh.param<double>("mapping/init_still_gyro", p_imu->init_still_gyro, 0.02);
+    ROS_INFO("fusion: vio_fusion %d (max zeta_l %.2f, sigma p %.3f m v %.3f m/s, max speed %.2f m/s), lidar_weight_by_zeta %d, gravity_align %d, nhc %d, tilt %d",
+             int(vio_fusion_enable), vio_fusion_max_zeta_l, vio_pos_sigma, vio_vel_sigma, vio_max_speed,
+             int(lidar_weight_by_zeta), int(gravity_align), int(nhc_enable), int(tilt_correction_enable));
     ikdtree.set_async_rebuild(ikdtree_async_rebuild);
     ROS_INFO("ikd-Tree rebuild mode: %s", ikdtree_async_rebuild ? "asynchronous" : "synchronous deterministic");
 
@@ -807,14 +948,18 @@ int main(int argc, char **argv)
                 flg_reset = false;
                 continue;
             }
-            // if (!EKF_stop_flg)
-            // {
             p_imu->Process(Measures, state, feats_undistort, EKF_stop_flg);
-            // }
+
+            int vio_status = 0;
+            double lidar_weight_used = 1.0;
+            Eigen::Vector3d vio_dp_body(Zero3d);
             StatesGroup state_propagat(state);
             pos_lid = state_propagat.pos_end + state_propagat.rot_end * state_propagat.T_L_I;
 
-            if (feats_undistort->empty() || (feats_undistort == NULL))
+            // Before the first map: nothing to do without points. Afterwards an empty scan (LiDAR blocked by
+            // smoke) is processed as a degenerate frame: IMU prediction, thermal-inertial / NHC / tilt updates, a pose.
+            const bool empty_scan = feats_undistort == NULL || feats_undistort->empty();
+            if (empty_scan && (ikdtree.Root_Node == nullptr || !have_last_post))
             {
                 std::cout << "No point, not ready for odometry, skip this scan" << std::endl;
                 continue;
@@ -834,14 +979,21 @@ int main(int argc, char **argv)
             lasermap_fov_segment();
 
             /*** downsample the features of new frame ***/
-            downSizeFilterSurf.setInputCloud(feats_undistort);
-            downSizeFilterSurf.filter(*feats_down);
+            if (empty_scan)
+                feats_down->clear();
+            else
+            {
+                downSizeFilterSurf.setInputCloud(feats_undistort);
+                downSizeFilterSurf.filter(*feats_down);
+            }
 
             feats_down_size = feats_down->points.size();
             /*** initialize the map kdtree ***/
             if (ikdtree.Root_Node == nullptr)
             {
-                if (feats_down->points.size() > 5)
+                // build the first map only from a valid state and a reasonably dense scan
+                if (feats_down->points.size() > 100 && state.pos_end.allFinite() && state.rot_end.allFinite() &&
+                    state.vel_end.allFinite())
                 {
                     ikdtree.set_downsample_param(filter_size_map_min);
                     feats_down_world->resize(feats_down_size);
@@ -978,6 +1130,17 @@ int main(int argc, char **argv)
                         }
                         tempQueue.pop();
                     }
+
+                    // Degradation-aware LiDAR weight: the point noise is inflated by 1 / zeta_l_norm, so a
+                    // partially degraded LiDAR is still used, but the thermal-inertial measurement keeps a say.
+                    double laser_point_cov = LASER_POINT_COV;
+                    if (lidar_weight_by_zeta && tis_online && lidar_cnt >= 100)
+                    {
+                        const double zl = 2.0 / (1.0 + std::exp(-effct_feat_num / (beta * Nla))) - 1;
+                        const double zn = (zl + zeta_t) > 1e-12 ? zl / (zl + zeta_t) : 1.0;
+                        lidar_weight_used = std::max(lidar_min_weight, std::min(1.0, zn));
+                        laser_point_cov = LASER_POINT_COV / lidar_weight_used;
+                    }
                     // if (effct_feat_num < 50)
                     // {
                     //     // TODO: do something
@@ -998,7 +1161,6 @@ int main(int argc, char **argv)
                     fout_out << std::setw(10) << Measures.lidar_beg_time - first_lidar_time << " " << effct_feat_num
                              << " " << res_mean_last << " " << flg_EKF_converged << " " << EKF_stop_flg << " " << coeffSel_tmpt->points.size()<<" "<<RECV_LIO_FAIL_FLAG << " "<<recv_n << std::endl;
 
-                    // pub_tis_odom_delta.publish(g_tis_odom_delta);
 
                     /*** Computation of Measuremnt Jacobian matrix H and measurents vector ***/
                     Eigen::MatrixXd Hsub(effct_feat_num, 12);
@@ -1077,7 +1239,7 @@ int main(int argc, char **argv)
                         H_T_H.block<12, 12>(0, 0) = Hsub_T * Hsub;
                         
                         Eigen::Matrix<double, DIM_OF_STATES, DIM_OF_STATES> &&K_1 =
-                            (H_T_H + (state.cov / LASER_POINT_COV).inverse()).inverse(); 
+                            (H_T_H + (state.cov / laser_point_cov).inverse()).inverse();
                         K = K_1.block<DIM_OF_STATES, 12>(0, 0) * Hsub_T;                
                                                                                         
 
@@ -1107,32 +1269,13 @@ int main(int argc, char **argv)
                         deltaR = rot_add.norm() * 57.3;
                         deltaT = t_add.norm() * 100;
 
-                        // state_propagat = state;
-
-                        last_nodegared_state = state;
-                        // Keep the LIO anchor and the TIS delta origin on the
-                        // same measurement boundary.  A non-degenerate lidar
-                        // frame can arrive without a new TIS sample.  Clearing
-                        // only the delta in that case leaves g_tis_odom at the
-                        // old degeneration origin; the next TIS callback then
-                        // reapplies the whole old displacement to this new LIO
-                        // anchor and can create a multi-metre state jump.
-                        if (g_tis_odom_last != nullptr)
-                        {
-                            g_tis_odom = g_tis_odom_last;
-                        }
-                        deltaOdomSetZero(g_tis_odom_delta);
-                        // end of add
                     }
                     else
                     {
-                        state.display();
-                        last_nodegared_state.display();
-                        odomToStateGruop(g_tis_odom_delta).display();
-                        state = last_nodegared_state + odomToStateGruop(g_tis_odom_delta);
-                        state.display();
-                        // end of add
-                        flg_EKF_inited = false;
+                        // LiDAR degenerate: no LiDAR update this frame. Keep the IMU prediction, which was
+                        // already corrected by the thermal-inertial motion measurement when available.
+                        state = state_propagat;
+                        flg_EKF_inited = false; // no LiDAR covariance update below
                     }
                     euler_cur = RotMtoEuler(state.rot_end);
                     std::cout << "flg_EKF_converged: " << flg_EKF_converged << std::endl;
@@ -1175,46 +1318,64 @@ int main(int argc, char **argv)
                 }
 
 
-                if ( ( lidar_cnt < 100 ) || ( !tis_online ) || ( tis_online && lidar_cnt % 2 == 1 ) )
+                // Degradation factors (logged for the Fig. 7/8 style analysis and used to weight the
+                // measurements of the next frame). They no longer interpolate between state increments.
                 {
-                    // update zeta_l
-                    auto alpha_l = effct_feat_num / ( beta * Nla);
-                    zeta_l = 2.0 / ( 1.0 +  std::exp(-alpha_l) ) - 1;
-                    
-                    auto zeta_l_norm = zeta_l / ( zeta_l + zeta_t);
-                    if( lidar_cnt < 100 )
-                    {
+                    const double alpha_l = effct_feat_num / (beta * Nla);
+                    zeta_l = 2.0 / (1.0 + std::exp(-alpha_l)) - 1;
+                    double zeta_l_norm = (zeta_l + zeta_t) > 1e-12 ? zeta_l / (zeta_l + zeta_t) : 1.0;
+                    if (lidar_cnt < 100)
                         zeta_l_norm = 1;
-                    }
                     ROS_INFO("zeta_l: %f, zeta_t: %f, zeta_l_norm: %f", zeta_l, zeta_t, zeta_l_norm);
-
-
-                    state = last_state + ( state_propagat - last_state ) * (1 - zeta_l_norm) + ( state - last_state ) * zeta_l_norm;
-
-                    deltaOdomSetZero(g_tis_odom_delta_lframe2lframe);
+                    prev_zeta_l_norm = zeta_l_norm;
+                    prev_zeta_t_norm = 1.0 - zeta_l_norm;
                 }
-                else
+
+                /*** thermal-inertial motion measurement (after the LiDAR update, so the LiDAR data association
+                 *** still starts from the IMU prediction). Its weight is the normalized thermal factor, so it
+                 *** dominates only where the LiDAR is degraded or geometrically unconstrained. ***/
+                const bool lidar_degraded = EKF_stop_flg || prev_zeta_l_norm < vio_fusion_max_zeta_l;
+                if (nhc_enable && lidar_degraded && lidar_cnt >= 100)
+                    applyNhc(state, p_imu->angvel_last(2));
+                // only while the LiDAR update is stopped: in partially degraded frames the LiDAR keeps the attitude
+                // consistent with the map and its corrections make the velocity difference a poor acceleration estimate
+                if (tilt_correction_enable && EKF_stop_flg && have_last_post && lidar_cnt >= 100)
                 {
-                    auto zeta_t_norm = zeta_t / (zeta_l + zeta_t);
-                    ROS_INFO("zeta_l: %f, zeta_t: %f, zeta_t_norm: %f", zeta_l, zeta_t, zeta_t_norm);
-                    StatesGroup tis_delta = odomToStateGruop(g_tis_odom_delta_lframe2lframe);
-                    const double delta_translation = tis_delta.pos_end.norm();
-                    const double delta_rotation = Log(tis_delta.rot_end).norm();
-                    if (!std::isfinite(delta_translation) || !std::isfinite(delta_rotation) ||
-                        delta_translation > vio_max_delta_translation || delta_rotation > vio_max_delta_rotation)
+                    const double dt_f = Measures.observation_end_time - last_post_time;
+                    if (dt_f > 1e-3 && dt_f < 0.5)
+                        tiltCorrection(state, Measures, p_imu->accScale(), (state.vel_end - last_post_state.vel_end) / dt_f, dt_f);
+                }
+                if (vio_fusion_enable && tis_online && have_last_post && lidar_cnt >= 100 && lidar_degraded)
+                {
+                    vio_status = fuseVinsMotion(state, last_post_state, last_post_time, Measures.observation_end_time,
+                                                prev_zeta_t_norm, vio_dp_body);
+                    if (vio_status == 1)
+                        euler_cur = RotMtoEuler(state.rot_end);
+                }
+                {
+                    // one line when the degraded (thermal-inertial) mode is entered or left (rate-limited)
+                    static bool was_degraded = false;
+                    static double last_mode_msg = -1.0;
+                    const bool degraded_now = lidar_cnt >= 100 && lidar_degraded;
+                    if (degraded_now != was_degraded && Measures.observation_end_time - last_mode_msg > 2.0)
                     {
-                        ROS_WARN("Rejecting implausible VINS delta: translation %.3f m, rotation %.3f rad.",
-                                 delta_translation, delta_rotation);
-                        deltaOdomSetZero(g_tis_odom_delta_lframe2lframe);
+                        if (degraded_now)
+                            ROS_INFO("LiDAR degraded (zeta_l_norm %.2f, LiDAR update %s): IMU + thermal-inertial motion%s.",
+                                     prev_zeta_l_norm, EKF_stop_flg ? "stopped" : "down-weighted", nhc_enable ? " + NHC" : "");
+                        else
+                            ROS_INFO("LiDAR recovered (zeta_l_norm %.2f).", prev_zeta_l_norm);
+                        was_degraded = degraded_now;
+                        last_mode_msg = Measures.observation_end_time;
                     }
-                    else
+                    if (fusion_debug_log)
                     {
-                        state = last_state + ( state - last_state ) * (1 - zeta_t_norm) + tis_delta * zeta_t_norm;
-                        tis_delta.display();
+                        // LIO displacement of this frame in the body frame of the previous posterior (compare with vio_dp)
+                        const V3D lio_dp = have_last_post ? V3D(last_post_state.rot_end.transpose() * (state.pos_end - last_post_state.pos_end)) : V3D(Zero3d);
+                        ROS_INFO("fusion: lidar_stop %d vio %d lidar_w %.3f vio_dp %.4f %.4f %.4f lio_dp %.4f %.4f %.4f bg %.5f %.5f %.5f",
+                                 int(EKF_stop_flg), vio_status, lidar_weight_used, vio_dp_body(0), vio_dp_body(1), vio_dp_body(2),
+                                 lio_dp(0), lio_dp(1), lio_dp(2), state.bias_g(0), state.bias_g(1), state.bias_g(2));
                     }
                 }
-
-                last_state = state;
                 std::cout << ANSI_COLOR_GREEN_BOLD << "[ mapping ]: iteration count: " << iterCount + 1 << ANSI_COLOR_RESET << std::endl;
 
 /*-----------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -1229,17 +1390,23 @@ int main(int argc, char **argv)
 
                 if (save_tum_traj)
                 {
-                    static std::ostringstream stamp;
-                    stamp.str("");
-                    if (fout_traj.is_open())
+                    // Stamp = time of the state (end of the scan), as on /aft_mapped_to_init. A scan whose last point
+                    // time is too late (seen in smoke) moves the state ahead of the following scan ends; rows are
+                    // written only with strictly increasing stamps so the file stays a valid TUM trajectory.
+                    static long long last_tum_stamp_us = -1;
+                    const long long stamp_us = std::llround(Measures.observation_end_time * 1e6);
+                    if (fout_traj.is_open() && stamp_us > last_tum_stamp_us)
                     {
-                        // std::string tstamp = to_string(ros::Time().fromSec(laser_odometry->time));
-                        std::string tstamp = std::to_string(Measures.lidar_beg_time);
-                        Eigen::Quaterniond q_curr = Eigen::Quaterniond(state.rot_end); 
-                        q_curr.normalize();                                            
+                        last_tum_stamp_us = stamp_us;
+                        std::string tstamp = std::to_string(Measures.observation_end_time);
+                        Eigen::Quaterniond q_curr = Eigen::Quaterniond(state.rot_end);
+                        q_curr.normalize();
                         saveTrajectoryTUMformat(fout_traj, tstamp, state.pos_end, q_curr);
                     }
                 }
+                last_post_state = state;
+                last_post_time = Measures.observation_end_time;
+                have_last_post = true;
 /*-----------------------------------------------------------------------------------------------------------------------------------------------*/
 
 
@@ -1320,7 +1487,14 @@ int main(int argc, char **argv)
             pubLaserCloudMap.publish(laserCloudMap);
 
             /******* Publish Odometry ******/
-            geometry_msgs::Quaternion geoQuat = tf::createQuaternionMsgFromRollPitchYaw(euler_cur(0), euler_cur(1), euler_cur(2));
+            // publish the final state (the blended orientation used to differ from the published one)
+            Eigen::Quaterniond q_pub(state.rot_end);
+            q_pub.normalize();
+            geometry_msgs::Quaternion geoQuat;
+            geoQuat.x = q_pub.x();
+            geoQuat.y = q_pub.y();
+            geoQuat.z = q_pub.z();
+            geoQuat.w = q_pub.w();
             odomAftMapped.header.frame_id = "camera_init";
             odomAftMapped.child_frame_id = "/aft_mapped";
             odomAftMapped.header.stamp = ros::Time().fromSec(Measures.observation_end_time);
@@ -1331,6 +1505,8 @@ int main(int argc, char **argv)
             odomAftMapped.pose.pose.position.x = state.pos_end(0);
             odomAftMapped.pose.pose.position.y = state.pos_end(1);
             odomAftMapped.pose.pose.position.z = state.pos_end(2);
+            // imuPreintegration reads covariance[0] == 1 as "degenerate" and then weakens this correction
+            odomAftMapped.pose.covariance[0] = EKF_stop_flg ? 1.0 : 0.0;
 
             pubOdomAftMapped.publish(odomAftMapped);
 

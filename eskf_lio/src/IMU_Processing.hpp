@@ -68,6 +68,23 @@ public:
   Eigen::Vector3d cov_acc;
   Eigen::Vector3d cov_gyr;
 
+  /*** Initialization / bias model (set from laserMapping parameters) ***/
+  // Rotate the world frame at start-up so that its z axis is opposite to gravity
+  // (gravity = [0, 0, -g]); downstream nodes (imuPreintegration, VINS) assume this.
+  bool gravity_align = true;
+  // Bias random walks [rad/s/sqrt(s)], [m/s^2/sqrt(s)] and the initial bias / gravity std.
+  // The gyro bias comes from the static start-up window, so its initial std is small.
+  double gyr_bias_rw = 5.0e-5;
+  double acc_bias_rw = 1.5e-3;
+  double init_bg_std = 1.0e-3;
+  double init_ba_std = 5.0e-2;
+  double init_grav_std = 1.0e-2;
+  // The start-up mean gyro is used as the bias only if the platform was still during the initialization window
+  // (otherwise it measures the motion: e.g. 0.045 rad/s on the rooftop sequence, which starts while turning).
+  double init_still_gyro = 0.02;  // [rad/s] max |mean gyro| and max per-axis gyro std
+  // accelerometer scale used by the propagation (normalizes the static start-up |acc| to g)
+  double accScale() const { return G_m_s2 / mean_acc.norm(); }
+
 private:
   /*** Whether is the first frame, init for first frame ***/
   bool b_first_frame_ = true;
@@ -106,6 +123,8 @@ ImuProcess::ImuProcess()
   mean_acc = Eigen::Vector3d(0, 0, -1.0);
   mean_gyr = Eigen::Vector3d(0, 0, 0);
   angvel_last = Zero3d;
+  acc_s_last = Zero3d;
+  last_observation_end_time_ = -1.0; // was left uninitialized: garbage could skip every IMU sample of the first frame
   Lidar_T_wrt_IMU = Zero3d;
   Lidar_R_wrt_IMU = Eye3d;
   cov_proc_noise = Eigen::Matrix<double, DIM_OF_PROC_N, 1>::Zero();
@@ -119,6 +138,8 @@ void ImuProcess::Reset()
   ROS_WARN("Reset ImuProcess");
   scale_gravity = 9.8;
   angvel_last = Zero3d;
+  acc_s_last = Zero3d;
+  last_observation_end_time_ = -1.0;
   cov_proc_noise = Eigen::Matrix<double, DIM_OF_PROC_N, 1>::Zero();
 
   cov_acc = Eigen::Vector3d(0.1, 0.1, 0.1);
@@ -192,8 +213,16 @@ void ImuProcess::IMU_Initial(const MeasureGroup &meas, StatesGroup &state_inout,
     N++;
   }
 
-  state_inout.gravity = -mean_acc / mean_acc.norm() * G_m_s2;
-  // state_inout.rot_end = Eye3d; // Exp(mean_acc.cross(Eigen::Vector3d(0, 0, -1 / scale_gravity)));
+  if (gravity_align)
+  {
+    // The accelerometer measures the specific force (pointing up at rest): rotate it onto +z.
+    state_inout.rot_end = Eigen::Quaterniond::FromTwoVectors(mean_acc.normalized(), Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    state_inout.gravity = Eigen::Vector3d(0, 0, -G_m_s2);
+  }
+  else
+  {
+    state_inout.gravity = -mean_acc / mean_acc.norm() * G_m_s2;
+  }
   state_inout.bias_g = mean_gyr;
   state_inout.R_L_I = Lidar_R_wrt_IMU;
   state_inout.T_L_I = Lidar_T_wrt_IMU;
@@ -224,7 +253,9 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, StatesGroup &state_inout
   IMUpose.push_back(set_pose6d(0.0, acc_s_last, angvel_last, state_inout.vel_end, state_inout.pos_end, state_inout.rot_end));
 
   /*** forward propagation at each imu point ***/
-  Eigen::Vector3d acc_imu, angvel_avr, acc_avr, vel_imu(state_inout.vel_end), pos_imu(state_inout.pos_end);
+  // Initialized: if no IMU sample lies after the last observation end the loop below does not run, and the
+  // frame-end propagation used to read uninitialized values (garbage state / empty first map).
+  Eigen::Vector3d acc_imu(acc_s_last), angvel_avr(angvel_last), acc_avr(Zero3d), vel_imu(state_inout.vel_end), pos_imu(state_inout.pos_end);
   Eigen::Matrix3d R_imu(state_inout.rot_end);
   Eigen::MatrixXd F_x(Eigen::Matrix<double, DIM_OF_STATES, DIM_OF_STATES>::Identity());
   Eigen::MatrixXd cov_w(Eigen::Matrix<double, DIM_OF_STATES, DIM_OF_STATES>::Zero());
@@ -282,8 +313,8 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, StatesGroup &state_inout
     cov_w.block<3, 3>(3, 3) = R_imu * cov_gyr_diag * R_imu.transpose() * dt * dt * 10000;
     //  TODO: extrinsic noise ???
     cov_w.block<3, 3>(12, 12) = R_imu * cov_acc_diag * R_imu.transpose() * dt * dt * 10000;
-    cov_w.block<3, 3>(15, 15).diagonal() = Eigen::Vector3d(0.0001, 0.0001, 0.0001) * dt * dt; // bias gyro covariance
-    cov_w.block<3, 3>(18, 18).diagonal() = Eigen::Vector3d(0.0001, 0.0001, 0.0001) * dt * dt; // bias acc covariance
+    cov_w.block<3, 3>(15, 15).diagonal() = Eigen::Vector3d::Ones() * gyr_bias_rw * gyr_bias_rw * dt; // bias gyro random walk
+    cov_w.block<3, 3>(18, 18).diagonal() = Eigen::Vector3d::Ones() * acc_bias_rw * acc_bias_rw * dt; // bias acc random walk
 
     state_inout.cov = F_x * state_inout.cov * F_x.transpose() + cov_w; 
 
@@ -311,16 +342,12 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, StatesGroup &state_inout
   
   
   dt = pcl_end_time - imu_end_time;
-  if(!EKF_stop_flg)
-  {
+  // Always propagate. When the LiDAR is degenerate (EKF_stop_flg) the IMU prediction is the only
+  // source of attitude; discarding it froze the state between thermal-odometry deltas.
+  (void)EKF_stop_flg;
   state_inout.vel_end = vel_imu + acc_imu * dt;
   state_inout.rot_end = R_imu * Exp(angvel_avr, dt);
-  state_inout.pos_end = pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt; 
-  }
-  else
-  {
-    std::cout << "[ IMU STOPPED Process ] " << std::endl;
-  }
+  state_inout.pos_end = pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt;
 
   last_observation_end_time_ = pcl_end_time;
 
@@ -330,6 +357,8 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, StatesGroup &state_inout
   std::cout << "propagated cov: " << state_inout.cov.diagonal().transpose() << std::endl;
 
   /*** undistort each lidar point (backward propagation) ***/
+  if (pcl_out.points.empty())
+    return; // empty scan: the state was propagated to the frame end, nothing to undistort
   auto it_pcl = pcl_out.points.end() - 1;
   for (auto it_kp = IMUpose.end() - 1; it_kp != IMUpose.begin(); it_kp--)
   {
@@ -394,8 +423,20 @@ void ImuProcess::Process(const MeasureGroup &meas, StatesGroup &stat, PointCloud
     if (init_iter_num > MAX_INI_COUNT)
     {
       imu_need_init_ = false;
+      const double gyr_std = std::sqrt(cov_gyr.maxCoeff());
+      if (mean_gyr.norm() > init_still_gyro || gyr_std > init_still_gyro)
+      {
+        ROS_WARN("IMU initialization while moving (|mean gyro| %.4f rad/s, std %.4f rad/s): gyro bias set to zero.",
+                 mean_gyr.norm(), gyr_std);
+        stat.bias_g.setZero();
+      }
       cov_acc = Eigen::Vector3d(0.1, 0.1, 0.1);
       cov_gyr = Eigen::Vector3d(0.1, 0.1, 0.1);
+      // The biases and gravity are now estimated states: start them with a realistic uncertainty
+      // instead of overwriting them every frame.
+      stat.cov.block<3, 3>(15, 15) = Eye3d * init_bg_std * init_bg_std;
+      stat.cov.block<3, 3>(18, 18) = Eye3d * init_ba_std * init_ba_std;
+      stat.cov.block<3, 3>(21, 21) = Eye3d * init_grav_std * init_grav_std;
       // std::cout<<"mean acc: "<<mean_acc<<" acc measures in word frame:"<<state.rot_end.transpose()*mean_acc<<std::endl;
       ROS_INFO("IMU Initials: Gravity: %.4f %.4f %.4f; state.bias_g: %.4f %.4f %.4f; acc covarience: %.8f %.8f %.8f; gry covarience: %.8f %.8f %.8f",
                stat.gravity[0], stat.gravity[1], stat.gravity[2], stat.bias_g[0], stat.bias_g[1], stat.bias_g[2], cov_acc[0], cov_acc[1], cov_acc[2], cov_gyr[0], cov_gyr[1], cov_gyr[2]);
@@ -405,9 +446,9 @@ void ImuProcess::Process(const MeasureGroup &meas, StatesGroup &stat, PointCloud
   }
   else
   {
-    stat.gravity << 0 ,0, -9.801;
-    stat.bias_a  << 1.44e-04 , 1.44e-04, 1.44e-04;
-    stat.bias_g  << 5.3e-05 , 5.3e-05, 5.3e-05;
+    // Gravity and IMU biases are filter states (initialized from the static start-up window).
+    // Overwriting them with constants every frame threw away the gyro bias, which is what keeps
+    // the heading while the LiDAR is degraded.
     stat.R_L_I = Lidar_R_wrt_IMU;
     stat.T_L_I = Lidar_T_wrt_IMU;
   }
