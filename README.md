@@ -30,11 +30,20 @@ cd src/DaLiTI && ./run_demo.sh --image daliti:latest /absolute/path/to/dataset.b
 cd src/DaLiTI
 # indoor smoke sequence (whole bag)
 ./run_demo.sh /absolute/path/to/daliti-indoor-smoke.bag
-# rooftop smoke sequence (90 s .. 177 s, back near the start point; rooftop camera calibration), evaluated against the ground truth
-./run_demo.sh --profile rooftop --gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum /absolute/path/to/rooftop.bag
+# outdoor smoke sequence (prepared 87-second bag; rooftop camera calibration)
+./run_demo.sh --profile outdoor-smoke /absolute/path/to/daliti-outdoor-smoke.bag
 ```
+All profiles start at 0 seconds and play to the end unless `--start` / `--duration` are specified.
+Add `--gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum` to evaluate the outdoor trajectory against ground truth;
+the prepared bag retains the original timestamps.
+For the original, untrimmed `rooftop.bag`, use `--profile rooftop`. To reproduce its 90 s .. 177 s evaluation window:
+```bash
+./run_demo.sh --profile rooftop --start 90 --duration 87 --gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum /absolute/path/to/rooftop.bag
+```
+The input image topic is configured by `img_topic` in `daliti/config/<profile>_input.yaml`.
+The camera YAML's `image_topic: /camera/edge` is the processed edge image consumed by VINS.
 `./run_demo.sh --help` lists the options: `--profile`, `--start` / `--duration` (playback window), `--camera NAME`
-(`daliti/config/NAME_camera.yaml`), `--image-topic`, `--gt`, `--image`, `--rebuild`.
+(`daliti/config/NAME_camera.yaml`), `--gt`, `--image`, `--rebuild`.
 
 The script starts the container with RViz (and NVIDIA graphics if available), waits for all nodes, plays the bag (or
 the selected window), stops the container, checks that the trajectory covers the window, and evaluates it. Each run

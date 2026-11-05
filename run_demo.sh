@@ -14,11 +14,11 @@ Usage: $0 [options] /path/to/dataset.bag
 Options:
   --profile NAME     preset for a sequence (default: indoor-smoke)
                        indoor-smoke  whole bag, camera calibration hitsz
-                       rooftop       90 s .. 177 s, camera calibration daliti-rooftop, /thermal/cam1/image8bit
-  --start SEC        start playback SEC seconds after the bag start
-  --duration SEC     play only SEC seconds
+                       outdoor-smoke whole prepared bag, camera calibration daliti-rooftop
+                       rooftop       whole raw bag, camera calibration daliti-rooftop, /thermal/cam1/image8bit
+  --start SEC        start playback SEC seconds after the bag start (default: 0 for every profile)
+  --duration SEC     play only SEC seconds (default: to the end of the bag)
   --camera NAME      VINS camera calibration daliti/config/NAME_camera.yaml
-  --image-topic T    8-bit thermal image topic
   --gt FILE          ground-truth TUM trajectory: report the ATE after the run
   --image NAME       Docker image (default: daliti:<git commit>, built automatically if missing)
   --rebuild          rebuild the Docker image before running
@@ -31,14 +31,13 @@ EOF
 }
 
 profile="indoor-smoke"
-opt_start="" opt_duration="" opt_camera="" opt_topic="" gt_arg="" opt_image="" rebuild=0 bag_arg=""
+opt_start="" opt_duration="" opt_camera="" gt_arg="" opt_image="" rebuild=0 bag_arg=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --profile) profile="${2:?}"; shift 2 ;;
         --start) opt_start="${2:?}"; shift 2 ;;
         --duration) opt_duration="${2:?}"; shift 2 ;;
         --camera) opt_camera="${2:?}"; shift 2 ;;
-        --image-topic) opt_topic="${2:?}"; shift 2 ;;
         --gt) gt_arg="${2:?}"; shift 2 ;;
         --image) opt_image="${2:?}"; shift 2 ;;
         --rebuild) rebuild=1; shift ;;
@@ -52,14 +51,18 @@ done
 if [[ -z "${bag_arg}" ]]; then usage; exit 2; fi
 
 case "${profile}" in
-    indoor-smoke) p_start=0; p_duration=""; p_camera=""; p_topic="/convert_image8_clahe" ;;
-    rooftop) p_start=90; p_duration=87; p_camera="daliti-rooftop"; p_topic="/thermal/cam1/image8bit" ;;
-    *) echo "Unknown profile: ${profile} (indoor-smoke | rooftop)" >&2; exit 2 ;;
+    indoor-smoke) p_camera="" ;;
+    outdoor-smoke|rooftop) p_camera="daliti-rooftop" ;;
+    *) echo "Unknown profile: ${profile} (indoor-smoke | outdoor-smoke | rooftop)" >&2; exit 2 ;;
 esac
-play_start="${opt_start:-${p_start}}"
-play_duration="${opt_duration:-${p_duration}}"
+play_start="${opt_start:-0}"
+play_duration="${opt_duration}"
 camera_config="${opt_camera:-${DALITI_CAMERA_CONFIG:-${p_camera}}}"
-image_topic="${opt_topic:-${p_topic}}"
+input_config="${repo_dir}/daliti/config/${profile}_input.yaml"
+if [[ ! -f "${input_config}" ]]; then
+    echo "Input configuration not found: ${input_config}" >&2
+    exit 1
+fi
 is_number() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]; }
 if ! is_number "${play_start}" || { [[ -n "${play_duration}" ]] && ! is_number "${play_duration}"; }; then
     echo "--start / --duration must be non-negative numbers of seconds." >&2
@@ -164,8 +167,10 @@ mkdir -p "${trajectory_dir}"
 
 bag_info="$("${docker_cmd[@]}" run --rm \
     -v "${bag_file}:/input.bag:ro" \
+    -v "${input_config}:/daliti_input.yaml:ro" \
     "${image_name}" /bin/bash -lc \
-    'source /opt/ros/noetic/setup.bash && rosbag info --yaml /input.bag')"
+    'source /opt/ros/noetic/setup.bash && rosbag info --yaml /input.bag && python3 -c '\''import yaml; print("input_image_topic: " + yaml.safe_load(open("/daliti_input.yaml"))["img_topic"])'\''')"
+image_topic="$(awk '$1 == "input_image_topic:" {print $2; exit}' <<<"${bag_info}")"
 bag_start="$(awk '$1 == "start:" {print $2; exit}' <<<"${bag_info}")"
 bag_end="$(awk '$1 == "end:" {print $2; exit}' <<<"${bag_info}")"
 bag_duration="$(awk '$1 == "duration:" {print $2; exit}' <<<"${bag_info}")"
@@ -183,7 +188,7 @@ image_topic_messages="$(awk -v topic="${image_topic}" '
     current == topic && $1 == "messages:" {print $2; exit}
 ' <<<"${bag_info}")"
 if [[ -z "${image_topic_messages}" ]]; then
-    echo "Warning: the bag has no ${image_topic} topic; the thermal pipeline will get no images (use --image-topic)." >&2
+    echo "Warning: the bag has no ${image_topic} topic; check img_topic in ${input_config}." >&2
 fi
 
 # Playback window (absolute bag time) and the number of LiDAR frames expected in it.
@@ -230,7 +235,7 @@ if command -v nvidia-smi >/dev/null 2>&1 &&
 fi
 
 launch_args="rosbag_file_with_path:='${bag_file}' trajectory_output_dir:=/results trajectory_run_id:='${run_id}'"
-launch_args+=" disable_ros1_eol_warnings:=1 bag_start:=${play_start} img_topic:=${image_topic}"
+launch_args+=" disable_ros1_eol_warnings:=1 bag_start:=${play_start} input_config:=/daliti_input.yaml"
 if [[ -n "${play_duration}" ]]; then
     launch_args+=" bag_duration:=${play_duration}"
 fi
@@ -263,6 +268,7 @@ echo "  run:     ${run_id}"
     -v "${xauth_file}:/tmp/daliti.xauth:ro" \
     -v "${data_dir}:${data_dir}:ro" \
     -v "${trajectory_dir}:/results:rw" \
+    -v "${input_config}:/daliti_input.yaml:ro" \
     "${image_name}" /bin/zsh -lc \
     "source /opt/ros/noetic/setup.zsh && source /ws/devel/setup.zsh && exec roslaunch daliti demo.launch ${launch_args}" \
     >/dev/null

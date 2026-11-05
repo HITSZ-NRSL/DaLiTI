@@ -18,9 +18,12 @@
 - While degraded: ground-robot non-holonomic constraint and a gravity-referenced roll / pitch correction.
 
 ## Running and output
-- `run_demo.sh`: `--profile` (`indoor-smoke`, `rooftop`), `--start` / `--duration`, `--camera`, `--image-topic`,
+- `run_demo.sh`: `--profile` (`indoor-smoke`, `outdoor-smoke`, `rooftop`), `--start` / `--duration`, `--camera`,
   `--gt` (ATE after the run), automatic image build per git commit (retried after network errors), `--image`,
   `--rebuild`.
+- All profiles start at 0 seconds and play to the end by default. `outdoor-smoke` uses the prepared
+  `daliti-outdoor-smoke.bag`; `rooftop` uses the original untrimmed bag and its raw thermal image topic.
+- Input image topics are configured in `daliti/config/<profile>_input.yaml` (`img_topic`).
 - TUM poses are stamped with the time of the state (end of each LiDAR scan), as on `/aft_mapped_to_init`.
 - Rooftop camera calibration: `daliti/config/daliti-rooftop_camera.yaml`.
 
@@ -30,7 +33,7 @@ Docker, `run_demo.sh`, desktop PC (Ryzen 9 9950X); previous version = release 97
 | sequence | metric | previous version | this version |
 |---|---|---|---|
 | indoor smoke, whole bag | start-to-end loop error* | 7.6 - 10.9 m (3 runs) | **0.03 - 0.04 m** (4 runs) |
-| rooftop smoke, 90 s - 177 s (back near the start point), `--profile rooftop` | ATE RMSE (SE(3) aligned) | crashes at 116 s (with only the crash fixed: 2.8, 124, 199 m) | **0.40 - 1.29 m** (6 runs, median 0.45 m) |
+| rooftop smoke, 90 s - 177 s (back near the start point), `--profile rooftop --start 90 --duration 87` | ATE RMSE (SE(3) aligned) | crashes at 116 s (with only the crash fixed: 2.8, 124, 199 m) | **0.40 - 1.29 m** (6 runs, median 0.45 m) |
 
 \* The robot stops 0.34 m from its start; the error compares the estimated start-to-end transform with the one
 obtained by registering the first and the last (static) LiDAR scans.
