@@ -2,13 +2,7 @@
 
 ## [RA-L 2025] **D**egradation-**a**ware **Li**DAR-**T**hermal-**I**nertial SLAM
 
-
-This repository contains code for a Degradation aware LiDAR-Thermal-Inertial SLAM, which is accepted by IEEE RA-L, June 2025.
-
-
-What changed in this version: [CHANGES.md](CHANGES.md).
-
-### 1. Dependency
+### 1. Dependencies
 - ROS noetic (tested)
 - Basic libraries for common SLAM (e.g. openCV 4, pcl-1.10, ceres-solver-1.14 etc.)
 - gtsam 4.0.3
@@ -16,9 +10,7 @@ What changed in this version: [CHANGES.md](CHANGES.md).
 ### 2. Using Docker (Recommended)
 
 #### 2.1 Docker Image
-`run_demo.sh` builds the image automatically the first time it runs (tag `daliti:<git commit>`, built from the
-committed code; this takes several minutes and needs internet access; set `http_proxy` / `https_proxy` if your network
-requires a proxy). To build an image by hand from the workspace root and use it:
+`run_demo.sh` builds the image on first use. Manual build:
 ```bash
 cd YOUR_NAME_OF_WORKSPACE
 docker build -t daliti:latest -f src/DaLiTI/Dockerfile .
@@ -28,29 +20,31 @@ cd src/DaLiTI && ./run_demo.sh --image daliti:latest /absolute/path/to/dataset.b
 #### 2.2 Run a Sequence
 ```bash
 cd src/DaLiTI
-# indoor smoke sequence (whole bag)
+# Indoor smoke
 ./run_demo.sh --profile daliti-indoor-smoke /absolute/path/to/daliti-indoor-smoke.bag
-# outdoor smoke sequence (prepared 87-second bag; rooftop camera calibration)
+# Outdoor smoke
 ./run_demo.sh --profile daliti-outdoor-smoke /absolute/path/to/daliti-outdoor-smoke.bag
 ```
-All profiles start at 0 seconds and play to the end unless `--start` / `--duration` are specified.
-Add `--gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum` to evaluate the outdoor trajectory against ground truth;
-the prepared bag retains the original timestamps.
-For the original, untrimmed `rooftop.bag`, use `--profile rooftop`. To reproduce its 90 s .. 177 s evaluation window:
-```bash
-./run_demo.sh --profile rooftop --start 90 --duration 87 --gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum /absolute/path/to/rooftop.bag
-```
-The input image topic is configured by `img_topic` in `daliti/config/<profile>_input.yaml`.
-The camera YAML's `image_topic: /camera/edge` is the processed edge image consumed by VINS.
-`./run_demo.sh --help` lists the options: `--profile`, `--start` / `--duration` (playback window), `--camera NAME`
-(`daliti/config/NAME_camera.yaml`), `--gt`, `--image`, `--rebuild`.
+With ground truth:
 
-The script starts the container with RViz (and NVIDIA graphics if available), waits for all nodes, plays the bag (or
-the selected window), stops the container, checks that the trajectory covers the window, and evaluates it. Each run
-writes to `eskf_lio/Log/`:
+```bash
+./run_demo.sh --profile daliti-outdoor-smoke \
+  --gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum \
+  /absolute/path/to/daliti-outdoor-smoke.bag
+```
+Configuration files in `daliti/config/`:
+
+| Profile | Input topic configuration | Camera calibration |
+|---|---|---|
+| `daliti-indoor-smoke` | `daliti-indoor-smoke_input.yaml` | `hitsz_camera.yaml` |
+| `daliti-outdoor-smoke` | `daliti-outdoor-smoke_input.yaml` | `daliti-rooftop_camera.yaml` |
+
+Run `./run_demo.sh --help` for additional options.
+
+Results in `eskf_lio/Log/`:
 
 ```text
-daliti_demo_YYYYMMDD_HHMMSS_PID.tum        poses, stamped with the time of the state (end of each LiDAR scan)
+daliti_demo_YYYYMMDD_HHMMSS_PID.tum        trajectory
 daliti_demo_YYYYMMDD_HHMMSS_PID.log        console log
 daliti_demo_YYYYMMDD_HHMMSS_PID_eval.json  path length, end-to-start distance, ATE (with --gt)
 ```
@@ -71,8 +65,6 @@ For validation, the hitsz degration dataset is provided: [dowload link](https://
 
 ### 4.  Acknowledgements
 DaLiTI is partly modified codes form [LVI-SAM](https://github.com/TixiaoShan/LVI-SAM), [FAST-LIO2](https://github.com/hku-mars/FAST_LIO), [VINS-Mono](https://github.com/HKUST-Aerial-Robotics/VINS-Mono), [ESKF_LIO](https://github.com/chengwei0427/ESKF_LIO.git) and [rebvo](https://github.com/JuanTarrio/rebvo). Thanks for the contributers.  
-
-Contributer: [Yufeng Liu](https://github.com/raymond-lau-lyf)
 
 ### 5.  Citation
 If you use our work, please cite:
