@@ -61,12 +61,15 @@ cd ..
 ```
 roslaunch daliti demo.launch rosbag_file_with_path:="YOUR/PATH/TO/ROSBAG/XXX.bag"
 ```
-For validation, the hitsz degration dataset is provided: [dowload link](https://entuedu-my.sharepoint.com/:f:/g/personal/yufeng004_e_ntu_edu_sg/EpL7PLCR5p1OrfxFnaIS1-oBOHiVjv-PG6_BFTvu3ANp9Q?e=kkutbE) 
 
-### 4.  Acknowledgements
+### 4. Dataset Download
+
+[Download dataset](https://entuedu-my.sharepoint.com/:f:/g/personal/yufeng004_e_ntu_edu_sg/EpL7PLCR5p1OrfxFnaIS1-oBOHiVjv-PG6_BFTvu3ANp9Q?e=kkutbE)
+
+### 5.  Acknowledgements
 DaLiTI is partly modified codes form [LVI-SAM](https://github.com/TixiaoShan/LVI-SAM), [FAST-LIO2](https://github.com/hku-mars/FAST_LIO), [VINS-Mono](https://github.com/HKUST-Aerial-Robotics/VINS-Mono), [ESKF_LIO](https://github.com/chengwei0427/ESKF_LIO.git) and [rebvo](https://github.com/JuanTarrio/rebvo). Thanks for the contributers.  
 
-### 5.  Citation
+### 6.  Citation
 If you use our work, please cite:
 ```
 @ARTICLE{11045071,
