@@ -106,6 +106,11 @@ public:
             else
                 break;
         }
+        // No IMU odometry newer than the last LiDAR odometry (the IMU odometry lags, e.g. under CPU
+        // load). Calling front()/back() on the empty deque was undefined behaviour: copying the garbage
+        // message aborted this node with std::bad_alloc / std::length_error and roslaunch respawned it.
+        if (imuOdomQueue.empty())
+            return;
         Eigen::Affine3f imuOdomAffineFront = odom2affine(imuOdomQueue.front());
         Eigen::Affine3f imuOdomAffineBack = odom2affine(imuOdomQueue.back());
         Eigen::Affine3f imuOdomAffineIncre = imuOdomAffineFront.inverse() * imuOdomAffineBack;
@@ -288,6 +293,12 @@ public:
         float r_z = odomMsg->pose.pose.orientation.z;
         float r_w = odomMsg->pose.pose.orientation.w;
         bool degenerate = (int)odomMsg->pose.covariance[0] == 1 ? true : false;
+        const double q_norm2 = double(r_x) * r_x + double(r_y) * r_y + double(r_z) * r_z + double(r_w) * r_w;
+        if (!std::isfinite(p_x) || !std::isfinite(p_y) || !std::isfinite(p_z) || !std::isfinite(q_norm2) || q_norm2 < 0.25)
+        {
+            ROS_WARN("imuPreintegration: ignoring invalid LiDAR odometry message.");
+            return;
+        }
         gtsam::Pose3 lidarPose = gtsam::Pose3(gtsam::Rot3::Quaternion(r_w, r_x, r_y, r_z), gtsam::Point3(p_x, p_y, p_z));
 
         // 0. initialize system
@@ -347,6 +358,7 @@ public:
         // reset graph for speed
         
         if (key == 100)
+        try
         {
             // get updated noise before reset
             
@@ -378,6 +390,16 @@ public:
             
             key = 1;
         }
+        catch (const std::exception &exception)
+        {
+            // marginalCovariance / update can throw on an ill-conditioned graph; this path was not guarded
+            ROS_ERROR("IMU preintegration graph reset failed: %s. Re-initializing.", exception.what());
+            graphFactors.resize(0);
+            graphValues.clear();
+            resetParams();
+            ++imuPreintegrationResetId;
+            return;
+        }
 
         // 1. integrate imu data and optimize
         
@@ -390,9 +412,10 @@ public:
             {
                 
                 double dt = (lastImuT_opt < 0) ? (1.0 / 500.0) : (imuTime - lastImuT_opt);
-                imuIntegratorOpt_->integrateMeasurement(
-                    gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
-                    gtsam::Vector3(thisImu->angular_velocity.x, thisImu->angular_velocity.y, thisImu->angular_velocity.z), dt);
+                if (dt > 0) // skip duplicated / out-of-order samples
+                    imuIntegratorOpt_->integrateMeasurement(
+                        gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
+                        gtsam::Vector3(thisImu->angular_velocity.x, thisImu->angular_velocity.y, thisImu->angular_velocity.z), dt);
 
                 lastImuT_opt = imuTime;
                 imuQueOpt.pop_front();
@@ -486,7 +509,8 @@ public:
                 sensor_msgs::Imu *thisImu = &imuQueImu[i];
                 double imuTime = ROS_TIME(thisImu);
                 double dt = (lastImuQT < 0) ? (1.0 / 500.0) : (imuTime - lastImuQT);
-
+                if (dt <= 0)
+                    continue;
                 imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                                                         gtsam::Vector3(thisImu->angular_velocity.x, thisImu->angular_velocity.y, thisImu->angular_velocity.z), dt);
                 lastImuQT = imuTime;
@@ -537,6 +561,8 @@ public:
         
         double imuTime = ROS_TIME(&thisImu);
         double dt = (lastImuT_imu < 0) ? (1.0 / 500.0) : (imuTime - lastImuT_imu);
+        if (dt <= 0)
+            return; // duplicated / out-of-order sample
         lastImuT_imu = imuTime;
 
         // integrate this single imu message
