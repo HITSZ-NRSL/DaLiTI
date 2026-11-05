@@ -123,8 +123,19 @@ build_image() {
         fi
     done
     echo "Building Docker image ${image_name} from commit ${git_commit} (this takes several minutes) ..."
-    git -C "${repo_dir}" archive --format=tar --prefix=src/DaLiTI/ HEAD |
-        "${docker_cmd[@]}" build "${build_args[@]}" -t "${image_name}" -f src/DaLiTI/Dockerfile -
+    local attempt
+    for attempt in 1 2 3; do
+        if git -C "${repo_dir}" archive --format=tar --prefix=src/DaLiTI/ HEAD |
+            "${docker_cmd[@]}" build "${build_args[@]}" -t "${image_name}" -f src/DaLiTI/Dockerfile -; then
+            return 0
+        fi
+        if (( attempt < 3 )); then
+            echo "The image build failed (attempt ${attempt} of 3; network errors are often transient). Retrying in 15 s ..." >&2
+            sleep 15
+        fi
+    done
+    echo "Could not build ${image_name}. Check the network / proxy (http_proxy, https_proxy) and run again." >&2
+    exit 1
 }
 if (( rebuild == 1 )) || ! "${docker_cmd[@]}" image inspect "${image_name}" >/dev/null 2>&1; then
     build_image
