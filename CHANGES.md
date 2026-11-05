@@ -18,10 +18,10 @@
 - While degraded: ground-robot non-holonomic constraint and a gravity-referenced roll / pitch correction.
 
 ## Running and output
-- `run_demo.sh`: `--profile` (`indoor-smoke`, `outdoor-smoke`, `rooftop`), `--start` / `--duration`, `--camera`,
+- `run_demo.sh`: `--profile` (`daliti-indoor-smoke`, `daliti-outdoor-smoke`, `rooftop`), `--start` / `--duration`, `--camera`,
   `--gt` (ATE after the run), automatic image build per git commit (retried after network errors), `--image`,
   `--rebuild`.
-- All profiles start at 0 seconds and play to the end by default. `outdoor-smoke` uses the prepared
+- All profiles start at 0 seconds and play to the end by default. `daliti-outdoor-smoke` uses the prepared
   `daliti-outdoor-smoke.bag`; `rooftop` uses the original untrimmed bag and its raw thermal image topic.
 - Input image topics are configured in `daliti/config/<profile>_input.yaml` (`img_topic`).
 - TUM poses are stamped with the time of the state (end of each LiDAR scan), as on `/aft_mapped_to_init`.

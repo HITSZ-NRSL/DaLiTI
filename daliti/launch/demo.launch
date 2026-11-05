@@ -7,7 +7,7 @@
 	<arg name="bag_start" default="0" />
 	<arg name="bag_duration" default="1000000" />
 	<!-- Input topics for the image pipeline, selected by the demo profile. -->
-	<arg name="input_config" default="$(find daliti)/config/indoor-smoke_input.yaml" />
+	<arg name="input_config" default="$(find daliti)/config/daliti-indoor-smoke_input.yaml" />
 	<arg name="trajectory_output_dir" default="$(find eskf_lio)/Log" />
 	<arg name="trajectory_run_id" default="" />
 	<arg name="ikdtree_async_rebuild" default="true" />

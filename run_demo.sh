@@ -12,9 +12,9 @@ usage() {
 Usage: $0 [options] /path/to/dataset.bag
 
 Options:
-  --profile NAME     preset for a sequence (default: indoor-smoke)
-                       indoor-smoke  whole bag, camera calibration hitsz
-                       outdoor-smoke whole prepared bag, camera calibration daliti-rooftop
+  --profile NAME     preset for a sequence (default: daliti-indoor-smoke)
+                       daliti-indoor-smoke  whole bag, camera calibration hitsz
+                       daliti-outdoor-smoke whole prepared bag, camera calibration daliti-rooftop
                        rooftop       whole raw bag, camera calibration daliti-rooftop, /thermal/cam1/image8bit
   --start SEC        start playback SEC seconds after the bag start (default: 0 for every profile)
   --duration SEC     play only SEC seconds (default: to the end of the bag)
@@ -30,7 +30,7 @@ http_proxy / https_proxy are passed to the image build if set.
 EOF
 }
 
-profile="indoor-smoke"
+profile="daliti-indoor-smoke"
 opt_start="" opt_duration="" opt_camera="" gt_arg="" opt_image="" rebuild=0 bag_arg=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -51,9 +51,9 @@ done
 if [[ -z "${bag_arg}" ]]; then usage; exit 2; fi
 
 case "${profile}" in
-    indoor-smoke) p_camera="" ;;
-    outdoor-smoke|rooftop) p_camera="daliti-rooftop" ;;
-    *) echo "Unknown profile: ${profile} (indoor-smoke | outdoor-smoke | rooftop)" >&2; exit 2 ;;
+    daliti-indoor-smoke) p_camera="" ;;
+    daliti-outdoor-smoke|rooftop) p_camera="daliti-rooftop" ;;
+    *) echo "Unknown profile: ${profile} (daliti-indoor-smoke | daliti-outdoor-smoke | rooftop)" >&2; exit 2 ;;
 esac
 play_start="${opt_start:-0}"
 play_duration="${opt_duration}"

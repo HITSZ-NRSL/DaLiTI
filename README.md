@@ -29,9 +29,9 @@ cd src/DaLiTI && ./run_demo.sh --image daliti:latest /absolute/path/to/dataset.b
 ```bash
 cd src/DaLiTI
 # indoor smoke sequence (whole bag)
-./run_demo.sh /absolute/path/to/daliti-indoor-smoke.bag
+./run_demo.sh --profile daliti-indoor-smoke /absolute/path/to/daliti-indoor-smoke.bag
 # outdoor smoke sequence (prepared 87-second bag; rooftop camera calibration)
-./run_demo.sh --profile outdoor-smoke /absolute/path/to/daliti-outdoor-smoke.bag
+./run_demo.sh --profile daliti-outdoor-smoke /absolute/path/to/daliti-outdoor-smoke.bag
 ```
 All profiles start at 0 seconds and play to the end unless `--start` / `--duration` are specified.
 Add `--gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum` to evaluate the outdoor trajectory against ground truth;
