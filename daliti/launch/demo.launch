@@ -1,6 +1,13 @@
 <launch>
 	<arg name="dataset" default="hitsz" />
+	<!-- VINS camera calibration: daliti/config/<camera_config>_camera.yaml (e.g. daliti-rooftop) -->
+	<arg name="camera_config" default="$(arg dataset)" />
 	<arg name="rosbag_file_with_path" default="" />
+	<!-- playback window [s] relative to the bag start; the default duration plays the whole bag -->
+	<arg name="bag_start" default="0" />
+	<arg name="bag_duration" default="1000000" />
+	<!-- 8-bit thermal image topic consumed by the image pipeline -->
+	<arg name="img_topic" default="/convert_image8_clahe" />
 	<arg name="trajectory_output_dir" default="$(find eskf_lio)/Log" />
 	<arg name="trajectory_run_id" default="" />
 	<arg name="ikdtree_async_rebuild" default="true" />
@@ -13,11 +20,8 @@
 	<param name="bag_file_name" type="string" value="~/daliti/src/DaLiTI/eskf_lio/Log/detail_result.bag" />
 
 
-	<node pkg="rosbag" type="play" name="play" args="-r 1 -s 0 --pause '$(arg rosbag_file_with_path)'" />
-	<param name="img_topic" type="string" value="/convert_image8_clahe" />
-
-	<!-- <node pkg="rosbag" type="play" name="play" args="-r 1 -s 45 $(arg pause_enable) $(arg rosbag_file_with_path)" />
-	<param name="img_topic" type="string" value="/thermal/cam1/image8bit" /> -->
+	<node pkg="rosbag" type="play" name="play" args="-r 1 -s $(arg bag_start) -u $(arg bag_duration) --pause '$(arg rosbag_file_with_path)'" />
+	<param name="img_topic" type="string" value="$(arg img_topic)" />
 
 
 	<!-- image front process tool -->
@@ -27,7 +31,7 @@
 	<!-- Lidar odometry param -->
 	<rosparam file="$(find daliti)/config/$(arg dataset)_lidar.yaml" command="load" />
 	<!-- VINS config -->
-	<param name="vins_config_file" type="string" value="$(find daliti)/config/$(arg dataset)_camera.yaml" />
+	<param name="vins_config_file" type="string" value="$(find daliti)/config/$(arg camera_config)_camera.yaml" />
 	<!-- Image conversion -->
 	<!-- <node pkg="image_transport" type="republish" name="republish" args="compressed in:=/camera/color/image_raw raw out:=/camera/color/image_raw" output="screen" respawn="true" /> -->
 	<!-- - Robot State TF -->

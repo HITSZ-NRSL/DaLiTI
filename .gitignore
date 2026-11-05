@@ -61,3 +61,7 @@ datasets
 # Runtime trajectories and diagnostic logs are host artifacts rather than
 # source files.
 /eskf_lio/Log/
+
+# Python caches
+__pycache__/
+*.pyc

@@ -1,21 +1,85 @@
 #!/usr/bin/env bash
+# Run DaLiTI on a rosbag inside Docker, write the TUM trajectory and the log, and optionally evaluate it.
 
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-image_name="${DALITI_DOCKER_IMAGE:-daliti:latest}"
 startup_wait=5
 drain_wait=8
 
-if [[ $# -ne 1 ]]; then
-    echo "Usage: $0 /absolute/path/to/dataset.bag" >&2
-    echo "Optional: set DALITI_DOCKER_IMAGE to use an image other than daliti:latest." >&2
+usage() {
+    cat >&2 <<EOF
+Usage: $0 [options] /path/to/dataset.bag
+
+Options:
+  --profile NAME     preset for a sequence (default: indoor-smoke)
+                       indoor-smoke  whole bag, camera calibration hitsz
+                       rooftop       90 s .. 150 s, camera calibration daliti-rooftop, /thermal/cam1/image8bit
+  --start SEC        start playback SEC seconds after the bag start
+  --duration SEC     play only SEC seconds
+  --camera NAME      VINS camera calibration daliti/config/NAME_camera.yaml
+  --image-topic T    8-bit thermal image topic
+  --gt FILE          ground-truth TUM trajectory: report the ATE after the run
+  --image NAME       Docker image (default: daliti:<git commit>, built automatically if missing)
+  --rebuild          rebuild the Docker image before running
+  -h, --help         show this help
+
+The trajectory (TUM, stamped with the state time) and the log are written to eskf_lio/Log/.
+Environment: DALITI_DOCKER_IMAGE and DALITI_CAMERA_CONFIG are used if --image / --camera are not given;
+http_proxy / https_proxy are passed to the image build if set.
+EOF
+}
+
+profile="indoor-smoke"
+opt_start="" opt_duration="" opt_camera="" opt_topic="" gt_arg="" opt_image="" rebuild=0 bag_arg=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --profile) profile="${2:?}"; shift 2 ;;
+        --start) opt_start="${2:?}"; shift 2 ;;
+        --duration) opt_duration="${2:?}"; shift 2 ;;
+        --camera) opt_camera="${2:?}"; shift 2 ;;
+        --image-topic) opt_topic="${2:?}"; shift 2 ;;
+        --gt) gt_arg="${2:?}"; shift 2 ;;
+        --image) opt_image="${2:?}"; shift 2 ;;
+        --rebuild) rebuild=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+        *)
+            if [[ -n "${bag_arg}" ]]; then echo "Only one bag can be given." >&2; usage; exit 2; fi
+            bag_arg="$1"; shift ;;
+    esac
+done
+if [[ -z "${bag_arg}" ]]; then usage; exit 2; fi
+
+case "${profile}" in
+    indoor-smoke) p_start=0; p_duration=""; p_camera=""; p_topic="/convert_image8_clahe" ;;
+    rooftop) p_start=90; p_duration=60; p_camera="daliti-rooftop"; p_topic="/thermal/cam1/image8bit" ;;
+    *) echo "Unknown profile: ${profile} (indoor-smoke | rooftop)" >&2; exit 2 ;;
+esac
+play_start="${opt_start:-${p_start}}"
+play_duration="${opt_duration:-${p_duration}}"
+camera_config="${opt_camera:-${DALITI_CAMERA_CONFIG:-${p_camera}}}"
+image_topic="${opt_topic:-${p_topic}}"
+is_number() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]; }
+if ! is_number "${play_start}" || { [[ -n "${play_duration}" ]] && ! is_number "${play_duration}"; }; then
+    echo "--start / --duration must be non-negative numbers of seconds." >&2
     exit 2
 fi
-
-if ! bag_file="$(realpath "$1")" || [[ ! -f "${bag_file}" ]]; then
-    echo "Bag file not found: $1" >&2
+if [[ -n "${camera_config}" && ! -f "${repo_dir}/daliti/config/${camera_config}_camera.yaml" ]]; then
+    echo "Camera calibration not found: daliti/config/${camera_config}_camera.yaml" >&2
     exit 1
+fi
+
+if ! bag_file="$(realpath "${bag_arg}")" || [[ ! -f "${bag_file}" ]]; then
+    echo "Bag file not found: ${bag_arg}" >&2
+    exit 1
+fi
+gt_file=""
+if [[ -n "${gt_arg}" ]]; then
+    if ! gt_file="$(realpath "${gt_arg}")" || [[ ! -f "${gt_file}" ]]; then
+        echo "Ground-truth file not found: ${gt_arg}" >&2
+        exit 1
+    fi
 fi
 
 if docker info >/dev/null 2>&1; then
@@ -27,10 +91,54 @@ else
     exit 1
 fi
 
-if ! "${docker_cmd[@]}" image inspect "${image_name}" >/dev/null 2>&1; then
-    echo "Docker image not found: ${image_name}" >&2
-    echo "Build it from the workspace root:" >&2
-    echo "  docker build -t ${image_name} -f src/DaLiTI/Dockerfile ." >&2
+# Image: by default tagged with the git commit, so the image always matches the checked-out code.
+git_commit=""
+if git -C "${repo_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git_commit="$(git -C "${repo_dir}" rev-parse --short=10 HEAD)"
+fi
+if [[ -n "${opt_image}" ]]; then
+    image_name="${opt_image}"
+elif [[ -n "${DALITI_DOCKER_IMAGE:-}" ]]; then
+    image_name="${DALITI_DOCKER_IMAGE}"
+elif [[ -n "${git_commit}" ]]; then
+    image_name="daliti:${git_commit}"
+else
+    image_name="daliti:latest"
+fi
+
+build_image() {
+    if [[ -z "${git_commit}" ]]; then
+        echo "Cannot build ${image_name} automatically: ${repo_dir} is not a git checkout." >&2
+        echo "Build it from the workspace root: docker build -t ${image_name} -f src/DaLiTI/Dockerfile ." >&2
+        exit 1
+    fi
+    if [[ -n "$(git -C "${repo_dir}" status --porcelain --untracked-files=no)" ]]; then
+        echo "Warning: uncommitted changes are not part of the image; it is built from commit ${git_commit}." >&2
+    fi
+    local build_args=(--network host)
+    local proxy_var
+    for proxy_var in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; do
+        if [[ -n "${!proxy_var:-}" ]]; then
+            build_args+=(--build-arg "${proxy_var}=${!proxy_var}")
+        fi
+    done
+    echo "Building Docker image ${image_name} from commit ${git_commit} (this takes several minutes) ..."
+    git -C "${repo_dir}" archive --format=tar --prefix=src/DaLiTI/ HEAD |
+        "${docker_cmd[@]}" build "${build_args[@]}" -t "${image_name}" -f src/DaLiTI/Dockerfile -
+}
+if (( rebuild == 1 )) || ! "${docker_cmd[@]}" image inspect "${image_name}" >/dev/null 2>&1; then
+    build_image
+fi
+
+# One run per host: the container uses the host network, i.e. one ROS master port shared by all runs. A second run
+# would register nodes with the same names and shut the first one down.
+active_run="$("${docker_cmd[@]}" ps --format '{{.Names}}' --filter 'name=daliti_demo_' | head -1)"
+if [[ -n "${active_run}" ]]; then
+    echo "Another DaLiTI run is active (container ${active_run}); wait for it to finish or stop it." >&2
+    exit 1
+fi
+if (exec 3<>/dev/tcp/127.0.0.1/11311) 2>/dev/null; then
+    echo "A ROS master is already running on port 11311; stop it first (the container uses the host network)." >&2
     exit 1
 fi
 
@@ -40,6 +148,7 @@ run_id="demo_$(date +%Y%m%d_%H%M%S)_$$"
 container_name="daliti_${run_id}"
 tum_file="${trajectory_dir}/daliti_${run_id}.tum"
 log_file="${trajectory_dir}/daliti_${run_id}.log"
+eval_file="${trajectory_dir}/daliti_${run_id}_eval.json"
 mkdir -p "${trajectory_dir}"
 
 bag_info="$("${docker_cmd[@]}" run --rm \
@@ -58,7 +167,24 @@ if [[ -z "${bag_start}" || -z "${bag_end}" || -z "${bag_duration}" ||
     echo "Could not read bag timing or the /ouster/points message count." >&2
     exit 1
 fi
-play_timeout="$(awk -v duration="${bag_duration}" 'BEGIN {printf "%d", duration + 181}')"
+image_topic_messages="$(awk -v topic="${image_topic}" '
+    $1 == "-" && $2 == "topic:" {current=$3}
+    current == topic && $1 == "messages:" {print $2; exit}
+' <<<"${bag_info}")"
+if [[ -z "${image_topic_messages}" ]]; then
+    echo "Warning: the bag has no ${image_topic} topic; the thermal pipeline will get no images (use --image-topic)." >&2
+fi
+
+# Playback window (absolute bag time) and the number of LiDAR frames expected in it.
+read -r window_start window_end expected_frames < <(awk -v s="${bag_start}" -v e="${bag_end}" -v d="${bag_duration}" \
+    -v off="${play_start}" -v len="${play_duration}" -v n="${lidar_messages}" 'BEGIN {
+        ws = s + off; we = (len == "") ? e : ws + len; if (we > e) we = e;
+        printf "%.6f %.6f %d\n", ws, we, (we > ws) ? n * (we - ws) / d : 0 }')
+if ! awk -v ws="${window_start}" -v we="${window_end}" 'BEGIN {exit !(we - ws > 2.0)}'; then
+    echo "The playback window is empty or too short (start ${play_start} s, bag duration ${bag_duration} s)." >&2
+    exit 1
+fi
+play_timeout="$(awk -v ws="${window_start}" -v we="${window_end}" 'BEGIN {printf "%d", we - ws + 181}')"
 
 xauth_file="${XAUTHORITY:-}"
 if [[ -z "${xauth_file}" || ! -f "${xauth_file}" ]]; then
@@ -92,6 +218,15 @@ if command -v nvidia-smi >/dev/null 2>&1 &&
     fi
 fi
 
+launch_args="rosbag_file_with_path:='${bag_file}' trajectory_output_dir:=/results trajectory_run_id:='${run_id}'"
+launch_args+=" disable_ros1_eol_warnings:=1 bag_start:=${play_start} img_topic:=${image_topic}"
+if [[ -n "${play_duration}" ]]; then
+    launch_args+=" bag_duration:=${play_duration}"
+fi
+if [[ -n "${camera_config}" ]]; then
+    launch_args+=" camera_config:=${camera_config}"
+fi
+
 container_active=0
 cleanup() {
     if (( container_active == 1 )) &&
@@ -104,9 +239,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "Starting DaLiTI demo"
-echo "  bag:   ${bag_file}"
-echo "  image: ${image_name}"
-echo "  run:   ${run_id}"
+echo "  bag:     ${bag_file}"
+echo "  profile: ${profile} (window ${play_start} s + ${play_duration:-all}, camera ${camera_config:-hitsz}, image ${image_topic})"
+echo "  image:   ${image_name}"
+echo "  run:     ${run_id}"
 
 "${docker_cmd[@]}" run -d --name "${container_name}" --network host \
     "${gpu_args[@]}" \
@@ -117,7 +253,7 @@ echo "  run:   ${run_id}"
     -v "${data_dir}:${data_dir}:ro" \
     -v "${trajectory_dir}:/results:rw" \
     "${image_name}" /bin/zsh -lc \
-    "source /opt/ros/noetic/setup.zsh && source /ws/devel/setup.zsh && exec roslaunch daliti demo.launch rosbag_file_with_path:='${bag_file}' trajectory_output_dir:=/results trajectory_run_id:='${run_id}' disable_ros1_eol_warnings:=1" \
+    "source /opt/ros/noetic/setup.zsh && source /ws/devel/setup.zsh && exec roslaunch daliti demo.launch ${launch_args}" \
     >/dev/null
 container_active=1
 
@@ -178,10 +314,17 @@ if [[ "${unpause_result}" != *"success: True"* ]]; then
 fi
 
 bag_finished=0
+play_misses=0
 for ((check_index=0; check_index<play_timeout; ++check_index)); do
-    if ! "${docker_cmd[@]}" exec "${container_name}" pgrep -x play >/dev/null 2>&1; then
-        bag_finished=1
-        break
+    if "${docker_cmd[@]}" exec "${container_name}" pgrep -x play >/dev/null 2>&1; then
+        play_misses=0
+    else
+        # A single failed `docker exec` is not proof that playback ended: require three consecutive misses.
+        play_misses=$((play_misses + 1))
+        if (( play_misses >= 3 )); then
+            bag_finished=1
+            break
+        fi
     fi
     sleep 1
 done
@@ -215,23 +358,46 @@ fi
 tum_rows="$(wc -l <"${tum_file}")"
 tum_first="$(awk 'NR == 1 {print $1; exit}' "${tum_file}")"
 tum_last="$(awk 'END {print $1}' "${tum_file}")"
-minimum_rows="$((lidar_messages * 99 / 100))"
+minimum_rows="$((expected_frames * 99 / 100))"
+status=0
 if ! awk -v first="${tum_first}" -v last="${tum_last}" \
-    -v start="${bag_start}" -v end="${bag_end}" \
-    'BEGIN {exit !((first-start) <= 1.0 && (end-last) <= 1.0)}'; then
-    echo "The TUM trajectory does not cover both ends of the bag." >&2
-    exit 1
+    -v start="${window_start}" -v end="${window_end}" \
+    'BEGIN {exit !((first-start) <= 1.5 && (end-last) <= 1.5)}'; then
+    echo "The TUM trajectory does not cover both ends of the playback window." >&2
+    status=1
 fi
 if (( tum_rows < minimum_rows )); then
     echo "The TUM trajectory has ${tum_rows} rows; expected at least ${minimum_rows}." >&2
-    exit 1
+    status=1
+fi
+coverage="$(awk -v first="${tum_first}" -v last="${tum_last}" \
+    -v start="${window_start}" -v end="${window_end}" \
+    'BEGIN {printf "%.6f", 100 * (last-first) / (end-start)}')"
+
+eval_mounts=(-v "${trajectory_dir}:/results:rw" -v "${repo_dir}/tools:/tools:ro")
+eval_args=("/results/$(basename "${tum_file}")" --json "/results/$(basename "${eval_file}")")
+if [[ -n "${gt_file}" ]]; then
+    eval_mounts+=(-v "$(dirname "${gt_file}"):/gt:ro")
+    eval_args+=(--gt "/gt/$(basename "${gt_file}")")
+fi
+echo "Evaluation:"
+if ! "${docker_cmd[@]}" run --rm "${eval_mounts[@]}" "${image_name}" python3 /tools/evaluate_tum.py "${eval_args[@]}"; then
+    echo "The evaluation failed." >&2
+    status=1
+fi
+if [[ -f "${eval_file}" && "$(stat -c %u "${eval_file}")" != "$(id -u)" ]]; then
+    "${docker_cmd[@]}" run --rm -v "${trajectory_dir}:/results:rw" --entrypoint chown "${image_name}" \
+        "$(id -u):$(id -g)" "/results/$(basename "${eval_file}")" || true
 fi
 
-coverage="$(awk -v first="${tum_first}" -v last="${tum_last}" \
-    -v start="${bag_start}" -v end="${bag_end}" \
-    'BEGIN {printf "%.6f", 100 * (last-first) / (end-start)}')"
-echo "DaLiTI demo completed successfully."
+if (( status == 0 )); then
+    echo "DaLiTI demo completed successfully."
+else
+    echo "DaLiTI demo finished with errors (see above)."
+fi
 echo "  trajectory: ${tum_file}"
 echo "  log:        ${log_file}"
-echo "  rows:       ${tum_rows}/${lidar_messages}"
+echo "  evaluation: ${eval_file}"
+echo "  rows:       ${tum_rows}/${expected_frames}"
 echo "  coverage:   ${coverage}%"
+exit "${status}"

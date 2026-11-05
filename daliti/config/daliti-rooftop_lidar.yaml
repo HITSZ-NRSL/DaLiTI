@@ -1,0 +1,177 @@
+# project name
+PROJECT_NAME: "daliti"
+preprocess:
+  lidar_type: 3 # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
+  scan_line: 64
+  timestamp_unit: 3 # 0-second, 1-milisecond, 2-microsecond, 3-nanosecond.
+  blind: 1
+
+rebvo:
+  global:
+    VideoNetEnabled: true
+    VideoNetHost: 127.0.0.1
+    VideoNetPort: 2708
+    BlockingUDP: false
+    SaveLog: true
+    LogFile: rebvo_log.m
+    TrayFile: rebvo_tray.txt
+
+  Camera:
+    ZfX: 591.175294964448
+    ZfY: 588.825041558649
+    PPx: 338.124623127524
+    PPy: 239.891347054984
+    KcR2: -0.489173064896480
+    KcR4: 0.388107714447729
+    KcR6: -0.383699802729652
+    KcP1: 0.00137685302544284
+    KcP2: -0.00460909651554077
+    ImageWidth: 640
+    ImageHeight: 480
+    FPS: 15
+    UseUndistort: false
+    Rotate180: false
+
+  imu:
+    ImuMode: 0
+
+  transVlp2Cam:
+    tx: 0.0326
+    ty: -0.1328
+    tz: -0.0049
+    rx: 1.59436
+    ry: -1.69065
+    rz: 0.0176359
+
+  detector:
+    Sigma0: 3
+    KSigma: 1.2599
+    ReferencePoints: 12000
+    MaxPoints: 40000
+    TrackPoints: 10000
+    DetectorThresh: 0.1
+    DetectorAutoGain: 5e-7
+    DetectorMaxThresh: 10
+    DetectorMinThresh: 0.01
+    DetectorPlaneFitSize: 2
+    DetectorPosNegThresh: 0.4
+    # DetectorDoGThresh: 0.155259868922420
+    DetectorDoGThresh: 0.001
+
+  TrackMaper:
+    SearchRange: 40
+    QCutOffNumBins: 100
+    QCutOffQuantile: 0.9
+    TrackerIterNum: 10
+    TrackerInitType: 2
+    TrackerInitIterNum: 2
+    TrackerMatchThresh: 1
+    MatchThreshModule: 1
+    MatchThreshAngle: 45
+    MatchNumThresh: 0
+    ReweigthDistance: 2
+    RegularizeThresh: 0.5
+    LocationUncertaintyMatch: 2
+    ReshapeQAbsolute: 1e-4
+    ReshapeQRelative: 1e-2
+    LocationUncertainty: 1
+    DoReScaling: false
+    GlobalMatchThreshold: 500
+
+  ProcesorConfig:
+    SetAffinity: true
+    CamaraT1: 1
+    CamaraT2: 2
+    CamaraT3: 3
+daliti:
+
+  # Topics
+  pointCloudTopic: "/ouster/points" # Point cloud data
+  imuTopic: "/imu/data" # IMU data
+  odomTopic: "/odometry/imu" # IMU pre-preintegration odometry, same frequency as IMU
+  gpsTopic: "odometry/gpsz" # GPS odometry topic from navsat, see module_navsat.launch file
+
+  # Frames
+  lidarFrame: "lidar_link"
+  baselinkFrame: "lidar_link"
+  odometryFrame: "camera_init"
+  mapFrame: "camera_init"
+
+  # GPS Settings
+  useImuHeadingInitialization: false # if using GPS data, set to "true"
+  useGpsElevation: false # if GPS elevation is bad, set to "false"
+  gpsCovThreshold: 2.0 # m^2, threshold for using GPS data
+  poseCovThreshold: 25.0 # m^2, threshold for using GPS data
+
+  # Export settings
+  savePCD: false # https://github.com/TixiaoShan/LIO-SAM/issues/3
+  savePCDDirectory: "~/pcds/" # in your home folder, starts and ends with "/". Warning: the code deletes "LOAM" folder then recreates it. See "mapOptimization" for implementation
+
+  # Sensor Settings
+  sensor: ouster # lidar sensor type, 'velodyne' or 'ouster' or 'livox'
+  N_SCAN: 64 # number of lidar channel (i.e., Velodyne/Ouster: 16, 32, 64, 128, Livox Horizon: 6)
+  Horizon_SCAN: 1024 # lidar horizontal resolution (Velodyne:1800, Ouster:512,1024,2048, Livox Horizon: 4000)
+  downsampleRate: 1 # default: 1. Downsample your data if too many points. i.e., 16 = 64 / 4, 16 = 16 / 1
+  lidarMinRange: 0.5 # default: 1.0, minimum lidar range to be used
+  lidarMaxRange: 1000.0 # default: 1000.0, maximum lidar range to be used
+
+  # IMU Settings
+  imuAccNoise: 1.2163799584446335e-02
+  imuGyrNoise: 3.0572547761517702e-03
+  imuAccBiasN: 1.4453533271304003e-04
+  imuGyrBiasN: 5.2968987141886054e-05
+  imuGravity: 9.80511
+
+
+  ###################### extrinsic between IMU and LiDAR  ###########################
+  ###################### T_IMU_LiDAR, LiDAR -> IMU       ###########################
+  extrinsicTranslation: [-0.030712, 0.075875, 0.031380]
+  extrinsicRotation: [0.9999910, 0.0041351, -0.0009701, -0.0041356, 0.9999914, -0.0004832, 0.0009681, 0.0004872, 0.9999994]
+
+  ########################## IMU property config  ###########################
+  
+  
+  yawAxis: "+z"
+  
+  pitchAxis: "+y"
+  
+  rollAxis: "+x"
+
+
+  # LOAM feature threshold
+  edgeThreshold: 1.0
+  surfThreshold: 0.1
+  edgeFeatureMinValidNum: 10
+  surfFeatureMinValidNum: 100
+
+  # voxel filter paprams
+  odometrySurfLeafSize: 0.2 # default: 0.4
+  mappingCornerLeafSize: 0.1 # default: 0.2
+  mappingSurfLeafSize: 0.2 # default: 0.4
+
+  # robot motion constraint (in case you are using a 2D robot)
+  z_tollerance: 1000 # meters
+  rotation_tollerance: 1000 # radians
+
+  # CPU Params
+  numberOfCores: 4 # number of cores for mapping optimization
+  mappingProcessInterval: 0.15 # seconds, regulate mapping frequency
+
+  # Surrounding map
+  surroundingkeyframeAddingDistThreshold: 1.0 # meters, regulate keyframe adding threshold
+  surroundingkeyframeAddingAngleThreshold: 0.2 # radians, regulate keyframe adding threshold
+  surroundingKeyframeDensity: 2.0 # meters, downsample surrounding keyframe poses   
+  surroundingKeyframeSearchRadius: 50.0 # meters, within n meters scan-to-map optimization (when loop closure disabled)
+
+  # Loop closure
+  loopClosureEnableFlag: false
+  surroundingKeyframeSize: 25 # submap size (when loop closure enabled)
+  historyKeyframeSearchRadius: 15.0 # meters, key frame that is within n meters from current pose will be considerd for loop closure
+  historyKeyframeSearchTimeDiff: 30.0 # seconds, key frame that is n seconds older will be considered for loop closure
+  historyKeyframeSearchNum: 25 # number of hostory key frames will be fused into a submap for loop closure
+  historyKeyframeFitnessScore: 0.3 # icp threshold, the smaller the better alignment
+
+  # Visualization
+  globalMapVisualizationSearchRadius: 1000.0 # meters, global map visualization radius
+  globalMapVisualizationPoseDensity: 10.0 # meters, global map visualization keyframe density
+  globalMapVisualizationLeafSize: 1.0 # meters, global map visualization cloud density
