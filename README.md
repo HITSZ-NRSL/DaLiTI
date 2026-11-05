@@ -30,7 +30,7 @@ cd src/DaLiTI && ./run_demo.sh --image daliti:latest /absolute/path/to/dataset.b
 cd src/DaLiTI
 # indoor smoke sequence (whole bag)
 ./run_demo.sh /absolute/path/to/daliti-indoor-smoke.bag
-# rooftop smoke sequence (90 s .. 150 s, rooftop camera calibration), evaluated against the ground truth
+# rooftop smoke sequence (90 s .. 177 s, back near the start point; rooftop camera calibration), evaluated against the ground truth
 ./run_demo.sh --profile rooftop --gt /absolute/path/to/GroundTruth_Rooftop_Smoke.tum /absolute/path/to/rooftop.bag
 ```
 `./run_demo.sh --help` lists the options: `--profile`, `--start` / `--duration` (playback window), `--camera NAME`

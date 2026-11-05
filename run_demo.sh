@@ -14,7 +14,7 @@ Usage: $0 [options] /path/to/dataset.bag
 Options:
   --profile NAME     preset for a sequence (default: indoor-smoke)
                        indoor-smoke  whole bag, camera calibration hitsz
-                       rooftop       90 s .. 150 s, camera calibration daliti-rooftop, /thermal/cam1/image8bit
+                       rooftop       90 s .. 177 s, camera calibration daliti-rooftop, /thermal/cam1/image8bit
   --start SEC        start playback SEC seconds after the bag start
   --duration SEC     play only SEC seconds
   --camera NAME      VINS camera calibration daliti/config/NAME_camera.yaml
@@ -53,7 +53,7 @@ if [[ -z "${bag_arg}" ]]; then usage; exit 2; fi
 
 case "${profile}" in
     indoor-smoke) p_start=0; p_duration=""; p_camera=""; p_topic="/convert_image8_clahe" ;;
-    rooftop) p_start=90; p_duration=60; p_camera="daliti-rooftop"; p_topic="/thermal/cam1/image8bit" ;;
+    rooftop) p_start=90; p_duration=87; p_camera="daliti-rooftop"; p_topic="/thermal/cam1/image8bit" ;;
     *) echo "Unknown profile: ${profile} (indoor-smoke | rooftop)" >&2; exit 2 ;;
 esac
 play_start="${opt_start:-${p_start}}"
