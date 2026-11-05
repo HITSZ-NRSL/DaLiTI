@@ -19,7 +19,8 @@
 
 ## Running and output
 - `run_demo.sh`: `--profile` (`indoor-smoke`, `rooftop`), `--start` / `--duration`, `--camera`, `--image-topic`,
-  `--gt` (ATE after the run), automatic image build per git commit, `--image`, `--rebuild`.
+  `--gt` (ATE after the run), automatic image build per git commit (retried after network errors), `--image`,
+  `--rebuild`.
 - TUM poses are stamped with the time of the state (end of each LiDAR scan), as on `/aft_mapped_to_init`.
 - Rooftop camera calibration: `daliti/config/daliti-rooftop_camera.yaml`.
 
@@ -29,7 +30,7 @@ Docker, `run_demo.sh`, desktop PC (Ryzen 9 9950X); previous version = release 97
 | sequence | metric | previous version | this version |
 |---|---|---|---|
 | indoor smoke, whole bag | start-to-end loop error* | 7.6 - 10.9 m (3 runs) | **0.03 - 0.04 m** (4 runs) |
-| rooftop smoke, 90 s - 150 s, `--profile rooftop` | ATE RMSE (SE(3) aligned) | crashes at 116 s (3.0 - 6.6 m with only the crash fixed) | **0.39 - 0.59 m** (9 runs) |
+| rooftop smoke, 90 s - 177 s (back near the start point), `--profile rooftop` | ATE RMSE (SE(3) aligned) | crashes at 116 s (with only the crash fixed: 2.8, 124, 199 m) | **0.40 - 1.29 m** (6 runs, median 0.45 m) |
 
 \* The robot stops 0.34 m from its start; the error compares the estimated start-to-end transform with the one
 obtained by registering the first and the last (static) LiDAR scans.
@@ -51,3 +52,5 @@ fix included here there were none in 9 runs.
 - The thermal-inertial odometry needs the camera calibration of the session (`--camera`).
 - `nhc_enable` assumes the platform drives along the IMU x axis; disable it for other platforms or mountings.
 - If the platform moves during start-up, the gyro bias is assumed to be zero.
+- Rooftop: most of the remaining error builds up at the end of the LiDAR blackout (about 130 - 140 s), where the
+  thermal-inertial motion overestimates the speed; how much varies between runs.
